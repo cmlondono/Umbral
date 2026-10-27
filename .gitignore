@@ -1,0 +1,32 @@
+# Dependencias y compilaciones
+node_modules/
+/dist/
+server/web/dist/*
+!server/web/dist/.gitkeep
+*.exe
+*.tsbuildinfo
+
+# Configuración local de desarrollo
+*.local
+.env*.local
+
+# Claude Code y otros asistentes
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+.mcp.json
+
+# Editores y sistema operativo
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Registros
+*.log
+npm-debug.log*
+
+# Contexto y documentos personales (no se publican)
+privado/

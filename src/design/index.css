@@ -1,0 +1,10 @@
+/* Orden de carga: las reglas posteriores sobrescriben a las anteriores, como en la maqueta. */
+@import './tokens.css';
+@import './shell.css';
+@import './components.css';
+@import './screens.css';
+@import './layers.css';
+@import './responsive.css';
+@import './glass.css';
+@import './deploy.css';
+@import './login.css';
