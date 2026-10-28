@@ -36,7 +36,7 @@ const snap: Snapshot = {
   nextcloud: { configured: true, url: 'http://192.168.1.10:8080', container: 'nextcloud', reachable: true, httpStatus: 200, version: '30.0.2', maintenance: false, error: null },
   pc: { configured: false, name: '', ip: '', mac: '', state: 'unknown', lastSeen: null, lastWake: null },
   tailscale: { installed: true, running: true, error: null, self: { name: 'servidor-casa', ip: '100.101.12.4', dnsName: 'servidor-casa.tail3f2a1.ts.net' },
-    peers: [{ name: 'iphone', ip: '100.88.40.2', os: 'iOS', online: true, lastSeen: null }, { name: 'portatil', ip: '100.77.3.9', os: 'windows', online: false, lastSeen: minsAgo(300) }] },
+    peers: [{ name: 'iphone', ip: '100.88.40.2', os: 'iOS', online: true, lastSeen: null }, { name: 'portatil', ip: '100.77.3.9', os: 'windows', online: false, lastSeen: minsAgo(300) }], serve: [] },
   network: { subnet: '192.168.1.0/24', gateway: '192.168.1.1', iface: 'enp3s0', lastScan: minsAgo(2), devices: [
     { ip: '192.168.1.1', mac: '74:DA:88:10:3E:01', name: 'router', custom: '', pinned: false, vendor: '', online: true, firstSeen: minsAgo(9000), lastSeen: now(), registered: null },
     { ip: '192.168.1.10', mac: 'B8:AE:ED:4C:21:9F', name: 'servidor-casa', custom: '', pinned: false, vendor: '', online: true, firstSeen: minsAgo(9000), lastSeen: now(), registered: 'server' },
@@ -46,14 +46,42 @@ const snap: Snapshot = {
     { ip: '192.168.1.57', mac: '44:00:49:9B:31:C7', name: 'echo-dot', custom: '', pinned: false, vendor: '', online: true, firstSeen: minsAgo(9000), lastSeen: now(), registered: null },
     { ip: '192.168.1.73', mac: '5E:22:B0:DA:A1:19', name: '', custom: '', pinned: false, vendor: 'MAC privada (aleatoria)', online: true, firstSeen: minsAgo(47), lastSeen: now(), registered: null },
   ] },
-  updates: { lastCheck: minsAgo(300), checking: false, items: [{ container: 'nextcloud', image: 'nextcloud:30-apache', state: 'available', checkedAt: minsAgo(300), previousImageId: null, error: null }] },
+  updates: { lastCheck: minsAgo(300), checking: false, items: [{ container: 'nextcloud', image: 'nextcloud:30-apache', state: 'available', checkedAt: minsAgo(300), previousImageId: null, error: null, nextMajor: 'nextcloud:31-apache' }] },
   history: [{ at: minsAgo(6 * 1440), target: 'nextcloud', action: 'Reinicio', result: 'ok', detail: '', user: 'usuario' }],
   automations: [
     { id: 'r1', name: 'Encender el PC los días laborables', enabled: false, trigger: { kind: 'schedule', days: [1, 2, 3, 4, 5], time: '07:30' }, conditions: [], steps: [{ kind: 'wake', waitOn: true }], cooldownMin: 0, lastRun: null, hasHook: false, armed: 'waiting' },
   ],
   runs: [],
-  config: { serverName: 'servidor-casa', pc: { name: '', ip: '', mac: '', broadcast: '', checkPort: 3389 }, nextcloud: { url: '', container: 'nextcloud' }, remoteTool: null, sshUser: '', dataRoot: '/srv/umbral', scanMinutes: 5, router: { ip: '', model: '' } },
-  jobs: [], internet: true, panel: { version: '0.1.0', memMB: 14, uptimeSec: 3600 * 5, dataDir: '/var/lib/umbral' },
+  config: { serverName: 'servidor-casa', pc: { name: '', ip: '', mac: '', broadcast: '', checkPort: 3389 }, nextcloud: { url: '', container: 'nextcloud' }, remoteTool: null, sshUser: '', dataRoot: '/srv/umbral', scanMinutes: 5, router: { kind: '', url: '', user: '', insecure: false }, backupCopyDir: '', ncBackupKeep: 7, ncBackupMaint: false },
+  jobs: [], internet: true,
+  router: { configured: false, kind: '', connected: false, error: '', info: null, blocked: [], leases: 0, checkedAt: null, hasPassword: false },
+  system: {
+    helperInstalled: true, requested: null,
+    smart: { at: minsAgo(80), available: true, disks: [
+      { name: 'nvme0n1', model: 'Samsung SSD 970 EVO Plus 250GB', serial: 'S4EUNX0R000000', sizeGB: 250, kind: 'nvme', supported: true, passed: true, tempC: 41, hours: 9120, reallocated: null, pending: null, uncorrectable: null, percentUsed: 4, mediaErrors: 0, health: 'ok', note: '' },
+      { name: 'sda', model: 'WDC WD10EZEX-08WN4A0', serial: 'WD-WCC6Y0000000', sizeGB: 1000, kind: 'hdd', supported: true, passed: true, tempC: 36, hours: 31800, reallocated: 0, pending: 0, uncorrectable: 0, percentUsed: null, mediaErrors: null, health: 'ok', note: '' },
+    ] },
+    aptAvailable: true, aptCheckedAt: minsAgo(40), aptError: '', listsAt: minsAgo(300), listsUpdate: { at: minsAgo(80), ok: true, error: '' },
+    packages: [
+      { name: 'libssl3', from: '3.0.15-1~deb12u1', to: '3.0.17-1~deb12u2', security: true },
+      { name: 'openssl', from: '3.0.15-1~deb12u1', to: '3.0.17-1~deb12u2', security: true },
+      { name: 'tzdata', from: '2025a-0+deb12u1', to: '2025b-0+deb12u1', security: false },
+    ],
+    security: 2, reboot: false, rebootPkgs: null, unattended: false,
+  },
+  notify: { configured: false, server: 'https://ntfy.sh', topic: '', hasToken: false },
+  avail: [
+    { target: 'app:nextcloud', pct24h: 100, pct7d: 99.82, hours: 168, down: null },
+    { target: 'nextcloud', pct24h: 100, pct7d: 99.86, hours: 168, down: null },
+    { target: 'nextcloud-db', pct24h: 100, pct7d: 100, hours: 168, down: null },
+    { target: 'netdata', pct24h: 97.9, pct7d: 99.7, hours: 168, down: null },
+  ],
+  incidents: [
+    { target: 'netdata', from: minsAgo(400), to: minsAgo(370) },
+    { target: 'app:nextcloud', from: minsAgo(3 * 1440 + 200), to: minsAgo(3 * 1440 + 182) },
+    { target: 'nextcloud', from: minsAgo(3 * 1440 + 199), to: minsAgo(3 * 1440 + 185) },
+  ],
+  panel: { version: '1.2.0', memMB: 14, uptimeSec: 3600 * 5, dataDir: '/var/lib/umbral', port: 8420 },
 };
 if (q.has('mantenimiento')) Object.assign(snap.nextcloud, { httpStatus: 503, maintenance: true });
 
@@ -79,6 +107,13 @@ async function guard<T>(fn: () => T): Promise<T> {
   return structuredClone(fn());
 }
 const S = () => snap;
+const memLimits = [0];
+const ncSnaps = [1, 2, 3].map((i) => ({ name: '2026102' + (8 - i) + '-030000', at: minsAgo(i * 1440 - 200), ok: true, error: '', files: 40 + i * 7, transferredMB: 180 + i * 30, totalMB: 212000, seconds: 300 + i * 20, maintenance: false, exists: true }));
+const backupFiles = [0, 1, 2].map((i) => ({ name: 'nextcloud-db-2026102' + (7 - i) + '-030000.sql.gz', db: 'nextcloud-db', sizeKB: 13200 - i * 40, at: minsAgo(i * 1440 + 300), copied: i > 0 }));
+let volumes = [
+  { name: 'b3c1f07e9a2d4c8e6f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e', sizeMB: 412, createdAt: minsAgo(40 * 1440), stack: '', anonymous: true },
+  { name: 'pruebas_datos', sizeMB: 18, createdAt: minsAgo(90 * 1440), stack: 'pruebas', anonymous: false },
+];
 
 const series = (r: Range): History => {
   const n = { '1h': 60, '24h': 96, '7d': 84 }[r], step = { '1h': 60, '24h': 900, '7d': 7200 }[r];
@@ -127,6 +162,33 @@ export const fixtureAdapter: Adapter = {
   state: () => guard(S),
   refresh: () => guard(S),
   history: (r) => guard(() => series(r)),
+  logs: (name, lines) => guard(() => ({ at: now(), lines: Array.from({ length: Math.min(lines, 60) }, (_, i) => ({ at: minsAgo(60 - i), err: i % 17 === 5, text: i % 17 === 5 ? '[warn] ' + name + ': conexión lenta con la base de datos' : '[info] ' + name + ': petición GET /status.php 200 ' + (12 + i) + ' ms' })) })),
+  details: () => guard(() => ({ memLimitMB: memLimits[0], restart: 'unless-stopped', createdAt: minsAgo(6 * 1440), mounts: [{ type: 'volume', name: 'nextcloud_html', source: '/var/lib/docker/volumes/nextcloud_html/_data', destination: '/var/www/html' }] })),
+  setMemory: (_n, mb) => guard(() => { memLimits[0] = mb; return S(); }),
+  applyMajor: (name) => guard(() => { throw new ApiError('En el servidor simulado no se actualiza ' + name + '.', 409); }),
+  backupNextcloud: () => guard(() => { const id = 'nc' + Date.now(); const j: Job = { id, kind: 'ncfiles', target: 'nextcloud', state: 'running', progress: 0, message: '', steps: ['Comprobando el disco externo', 'Copia de la base de datos', 'Copiando la base de datos al disco externo', 'Copiando los archivos de Nextcloud', 'Guardando la instantánea'].map((label) => ({ label, state: 'pending' })), result: null } as unknown as Job; jobs.set(id, j);
+    let k = 0; const tick = () => { if (k > 0) j.steps[k - 1].state = 'done'; if (k < j.steps.length) { j.steps[k].state = 'running'; k++; setTimeout(tick, 700); } else { j.state = 'done'; j.message = 'Copia completa en el disco externo.'; ncSnaps.unshift({ name: '20261028-120000', at: now(), ok: true, error: '', files: 12, transferredMB: 64, totalMB: 212064, seconds: 4, maintenance: false, exists: true }); } }; tick(); return j; }),
+  testRouter: (c, password) => guard(() => { if (!password && !snap.router.hasPassword) throw new ApiError('Falta la contraseña del router.', 502); if (!c.url.startsWith('http')) throw new ApiError('El router no responde en ' + c.url + '.', 502); return { model: c.kind === 'mikrotik' ? 'hAP ax2' : 'GL.iNet GL-MT6000', firmware: c.kind === 'mikrotik' ? 'RouterOS 7.16.1' : 'OpenWrt 24.10.0', uptimeSec: 86400 * 3, hostname: 'router' }; }),
+  saveRouter: (c, password) => guard(() => { snap.config.router = c; snap.router = c.kind ? { configured: true, kind: c.kind, connected: true, error: '', info: { model: c.kind === 'mikrotik' ? 'hAP ax2' : 'GL.iNet GL-MT6000', firmware: c.kind === 'mikrotik' ? 'RouterOS 7.16.1' : 'OpenWrt 24.10.0', uptimeSec: 86400 * 3, hostname: 'router' }, blocked: [], leases: 7, checkedAt: now(), hasPassword: password !== undefined ? !!password : snap.router.hasPassword } : { configured: false, kind: '', connected: false, error: '', info: null, blocked: [], leases: 0, checkedAt: null, hasPassword: false }; return S(); }),
+  routerOp: (op, mac) => guard(() => { if (op === 'block' && mac) snap.router.blocked = [...snap.router.blocked, mac]; if (op === 'unblock') snap.router.blocked = snap.router.blocked.filter((m) => m !== mac); snap.network.devices = snap.network.devices.map((d) => ({ ...d, blocked: snap.router.blocked.includes(d.mac) })); return S(); }),
+  publish: (port, local) => guard(() => { snap.tailscale.serve = [...snap.tailscale.serve.filter((e) => e.port !== port), { port, local, target: 'http://127.0.0.1:' + local, url: 'https://' + snap.tailscale.self!.dnsName + (port === 443 ? '' : ':' + port) }]; return S(); }),
+  unpublish: (port) => guard(() => { snap.tailscale.serve = snap.tailscale.serve.filter((e) => e.port !== port); return S(); }),
+  systemCheck: () => guard(() => { snap.system.requested = now(); setTimeout(() => { snap.system.requested = null; if (snap.system.smart) snap.system.smart.at = now(); }, 4000); return S(); }),
+  backups: () => guard(() => ({ ncFiles: ncSnaps, files: backupFiles, copyDir: snap.config.backupCopyDir ? { path: snap.config.backupCopyDir, ok: true, problem: '', freeGB: 412, sameDisk: false, files: backupFiles.filter((b) => b.copied).length, lastCopy: minsAgo(1440) } : null })),
+  copyBackups: () => guard(() => { const n = backupFiles.filter((b) => !b.copied).length; backupFiles.forEach((b) => { b.copied = true; }); return { copied: n, files: backupFiles, copyDir: { path: snap.config.backupCopyDir, ok: true, problem: '', freeGB: 411, sameDisk: false, files: backupFiles.length, lastCopy: now() } }; }),
+  accessLog: () => guard(() => [
+    { at: minsAgo(3), user: 'admin', ip: '192.168.1.34', kind: 'login' as const, agent: 'Safari en iPhone', new: false },
+    { at: minsAgo(95), user: 'admin', ip: '100.88.12.4', kind: 'login' as const, agent: 'Chrome en Windows', new: true },
+    { at: minsAgo(97), user: 'admin', ip: '100.88.12.4', kind: 'fail' as const, agent: 'Chrome en Windows', new: false },
+    { at: minsAgo(1440), user: 'admin', ip: '192.168.1.20', kind: 'totp-on' as const, agent: 'Edge en Windows', new: false },
+    { at: minsAgo(1445), user: 'admin', ip: '192.168.1.20', kind: 'login' as const, agent: 'Edge en Windows', new: false },
+  ]),
+  saveNotify: (server, topic, token) => guard(() => { snap.notify = { configured: !!topic, server, topic, hasToken: token !== undefined ? !!token : snap.notify.hasToken }; return S(); }),
+  newTopic: () => guard(() => ({ topic: 'umbral-' + Math.random().toString(16).slice(2, 18).padEnd(16, '0') })),
+  testNotify: () => guard(() => { if (!snap.notify.configured) throw new ApiError('No se pudo enviar: los avisos no están configurados.', 502); return { ok: true }; }),
+  dockerDisk: () => guard(() => ({ buildCacheMB: 840, imagesMB: 3100, volumesMB: 2600, unused: volumes })),
+  pruneBuildCache: () => guard(() => ({ freedMB: 840 })),
+  removeVolume: (name) => guard(() => { volumes = volumes.filter((v) => v.name !== name); return { ok: true }; }),
   live: () => guard(() => ({ at: new Date().toISOString(), cpu: 6 + Math.random() * 14, rx: 0.5 + Math.random() * 6, tx: 0.2 + Math.random(), mem: 30 + Math.random() * 2, temp: 44 + Math.random() * 5 })),
   catalog: () => guard(() => catalog),
   job: (id) => guard(() => { const j = jobs.get(id); if (!j) throw new ApiError('Esa tarea ya no existe.', 404); return j; }),

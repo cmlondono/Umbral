@@ -29,11 +29,11 @@ import (
  * Las acciones son una lista cerrada y segura: no hay órdenes libres. */
 
 type Trigger struct {
-	Kind      string  `json:"kind"` // schedule | container | app | metric | presence | pc | hook
+	Kind      string  `json:"kind"` // schedule | container | app | metric | presence | pc | hook | access
 	Days      []int   `json:"days,omitempty"`
 	Time      string  `json:"time,omitempty"`
 	Container string  `json:"container,omitempty"`
-	Event     string  `json:"event,omitempty"` // container: stopped|unhealthy|running · presence: arrive|leave · pc: on|off
+	Event     string  `json:"event,omitempty"`  // container: stopped|unhealthy|running · presence: arrive|leave · pc: on|off · access: locked|newip|login
 	Metric    string  `json:"metric,omitempty"` // cpu | mem | disk | temp
 	Above     float64 `json:"above,omitempty"`
 	ForMin    int     `json:"forMin,omitempty"`
@@ -53,13 +53,15 @@ type Condition struct {
 }
 
 type Step struct {
-	Kind      string `json:"kind"` // wake | container | backup | scan | wait | http | updates
+	Kind      string `json:"kind"` // wake | container | backup | scan | wait | http | updates | notify
 	Container string `json:"container,omitempty"`
 	Op        string `json:"op,omitempty"` // start | stop | restart
 	WaitOn    bool   `json:"waitOn,omitempty"`
 	Minutes   int    `json:"minutes,omitempty"`
 	URL       string `json:"url,omitempty"`
-	Method    string `json:"method,omitempty"` // GET | POST
+	Method    string `json:"method,omitempty"`   // GET | POST
+	Text      string `json:"text,omitempty"`     // notify: mensaje
+	Priority  int    `json:"priority,omitempty"` // notify: 3 normal, 4 alta, 5 urgente
 }
 
 type RunSummary struct {
@@ -76,6 +78,7 @@ type Rule struct {
 	Conditions  []Condition `json:"conditions"`
 	Steps       []Step      `json:"steps"`
 	CooldownMin int         `json:"cooldownMin"`
+	NotifyFail  bool        `json:"notifyFail"` // avisar al móvil si falla
 	Created     time.Time   `json:"created"`
 	LastRun     *RunSummary `json:"lastRun"`
 	HookHash    string      `json:"hookHash,omitempty"` // solo en disco
@@ -205,7 +208,6 @@ func (e *Engine) Save(r Rule) (Rule, string, error) {
 	return r, token, nil
 }
 
-
 func (e *Engine) NewHook(id string) (string, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -328,6 +330,10 @@ func (e *Engine) validate(r *Rule) error {
 			return errors.New("Primero configura el PC en Ajustes › Dispositivos registrados.")
 		}
 	case "hook":
+	case "access":
+		if t.Event != "locked" && t.Event != "newip" && t.Event != "login" {
+			return errors.New("Elige qué acceso al panel la dispara.")
+		}
 	default:
 		return errors.New("Elige cuándo se ejecuta.")
 	}
@@ -381,6 +387,21 @@ func (e *Engine) validate(r *Rule) error {
 				return errors.New("Elige si iniciar, detener o reiniciar el contenedor.")
 			}
 		case "backup", "scan", "updates":
+		case "copy-backups", "nc-full":
+			if cfg.BackupCopyDir == "" {
+				return errors.New("Para copiar las copias fuera del servidor, elige antes la carpeta externa en Servidor › Copias de seguridad.")
+			}
+		case "notify":
+			if !e.a.Notify.Configured() {
+				return errors.New("Para avisar al móvil, configura antes los avisos en Ajustes › Avisos.")
+			}
+			s.Text = strings.TrimSpace(s.Text)
+			if len(s.Text) > 500 {
+				return errors.New("El mensaje del aviso puede tener como mucho 500 caracteres.")
+			}
+			if s.Priority < 3 || s.Priority > 5 {
+				s.Priority = 3
+			}
 		case "wait":
 			if s.Minutes < 1 || s.Minutes > 120 {
 				return errors.New("La espera debe ser de 1 a 120 minutos.")
@@ -435,7 +456,7 @@ func (e *Engine) Evaluate() {
 	var fire []Rule
 	var causes []string
 	for _, r := range e.rule {
-		if !r.Enabled || r.Trigger.Kind == "hook" {
+		if !r.Enabled || r.Trigger.Kind == "hook" || r.Trigger.Kind == "access" {
 			continue
 		}
 		l := e.live[r.ID]
@@ -728,7 +749,7 @@ func (e *Engine) fire(r Rule, cause string, manual bool) error {
 	go func() {
 		e.sem <- struct{}{}
 		defer func() { <-e.sem }()
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Hour)
+		ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), causeKey{}, cause), 3*time.Hour)
 		defer cancel()
 		run.Result = "ok"
 		for i, s := range r.Steps {
@@ -747,6 +768,11 @@ func (e *Engine) fire(r Rule, cause string, manual bool) error {
 		}
 		if run.Result == "ok" {
 			run.Detail = "Todas las acciones se completaron."
+		}
+		if run.Result == "error" && r.NotifyFail && e.a.Notify.Configured() {
+			c, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			_ = e.a.Notify.Send(c, "Falló: "+r.Name, run.Detail, 4, "warning")
+			cancel()
 		}
 		e.a.Log("automatización", r.Name, "Automatización", map[bool]error{true: nil, false: errors.New(run.Detail)}[run.Result == "ok"], cause)
 		e.finish(r.ID, run)
@@ -806,13 +832,67 @@ func stepLabel(s Step) string {
 		return "Llamar a " + s.URL
 	case "updates":
 		return "Buscar actualizaciones de imágenes"
+	case "notify":
+		return "Avisar al móvil"
+	case "copy-backups":
+		return "Copiar las copias a la carpeta externa"
+	case "nc-full":
+		return "Copia completa de Nextcloud al disco externo"
 	}
 	return s.Kind
+}
+
+type causeKey struct{}
+
+// Event lanza las reglas que esperan un suceso puntual (por ahora, accesos al
+// panel). Respetan sus condiciones y su pausa entre ejecuciones.
+func (e *Engine) Event(kind, event, cause string) {
+	e.mu.Lock()
+	var list []Rule
+	for _, r := range e.rule {
+		if r.Enabled && r.Trigger.Kind == kind && r.Trigger.Event == event {
+			list = append(list, r)
+		}
+	}
+	e.mu.Unlock()
+	for _, r := range list {
+		_ = e.fire(r, cause, false)
+	}
 }
 
 func (e *Engine) step(ctx context.Context, r Rule, s Step) (string, error) {
 	a := e.a
 	switch s.Kind {
+	case "nc-full":
+		if a.busy("", a.nextcloudName()) || a.busy("ncfiles", "") {
+			return "", errors.New("ya hay una acción en curso sobre Nextcloud")
+		}
+		j := a.newJob("ncfiles", a.nextcloudName(), "Comprobando el disco externo", "Copia de la base de datos", "Copiando la base de datos al disco externo", "Copiando los archivos de Nextcloud", "Guardando la instantánea")
+		if err := a.runNCFiles(ctx, j, "automatización"); err != nil {
+			j.fail(err.Error())
+			return "", err
+		}
+		return "Base de datos y archivos copiados al disco externo.", nil
+	case "copy-backups":
+		n, err := a.CopyBackups("automatización")
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%d archivos copiados.", n), nil
+	case "notify":
+		msg := s.Text
+		if cause, _ := ctx.Value(causeKey{}).(string); cause != "" {
+			if msg != "" {
+				msg += "\n"
+			}
+			msg += "Motivo: " + cause
+		}
+		c, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		if err := a.Notify.Send(c, r.Name, msg, s.Priority, "house"); err != nil {
+			return "", err
+		}
+		return "Aviso enviado.", nil
 	case "wake":
 		if err := a.Wake("automatización", " ("+r.Name+")"); err != nil {
 			return "", err

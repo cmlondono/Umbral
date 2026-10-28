@@ -130,15 +130,17 @@ export async function startPull() {
 }
 
 /* ---------- Actualizaciones ---------- */
-export function doUpdate(name: string, image: string, revert: boolean) {
-  confirmModal(revert
+export function doUpdate(name: string, image: string, revert: boolean, major?: string) {
+  confirmModal(major
+    ? { title: '¿Pasar Nextcloud a la versión ' + (major.split(':')[1] || major) + '?', body: 'Es un cambio de versión mayor: Nextcloud estará en modo de mantenimiento entre 10 y 30 minutos mientras actualiza su base de datos; avisa a quien lo use. Antes, el panel copiará la base de datos; si la copia falla, no se toca nada. No se puede volver atrás desde el panel. Algunas apps de Nextcloud pueden quedar desactivadas si aún no son compatibles. No reinicies el servidor mientras tanto.', confirmLabel: 'Cambiar de versión', confirmCls: 'btn btn-danger-solid', onConfirm: () => go() }
+    : revert
     ? { title: '¿Volver a la versión anterior de ' + name + '?', body: 'Se recreará el contenedor con la imagen anterior, que se conservó al actualizar. Estará sin servicio unos segundos.', confirmLabel: 'Revertir', onConfirm: () => go() }
     : image.startsWith('nextcloud')
       ? { title: '¿Actualizar Nextcloud ahora?', body: 'Nextcloud estará en modo de mantenimiento entre 5 y 15 minutos: avisa a quien lo esté usando, porque una subida en curso se cortará. Antes de tocar nada, el panel copiará la base de datos; si la copia falla, no se actualiza. Tus archivos no se tocan. Si la versión nueva salta más de una versión mayor, se detiene sin cambiar nada. Si algo sale mal después, Nextcloud se queda en mantenimiento para proteger los datos. No reinicies el servidor ni actualices Debian mientras tanto.', confirmLabel: 'Actualizar Nextcloud', confirmCls: 'btn btn-danger-solid', onConfirm: () => go() }
       : { title: '¿Actualizar ' + name + '?', body: 'Se descargará la versión nueva de ' + image + ' y se recreará el contenedor con la misma configuración y los mismos datos. Estará sin servicio unos segundos. La imagen anterior se conserva para poder revertir. No reinicies el servidor mientras tanto.', confirmLabel: 'Actualizar', onConfirm: () => go() });
   async function go() {
     try {
-      const j = await (revert ? adapter().revertUpdate(name) : adapter().applyUpdate(name));
+      const j = await (major ? adapter().applyMajor(name) : revert ? adapter().revertUpdate(name) : adapter().applyUpdate(name));
       set((s) => ({ updJobs: { ...s.updJobs, [name]: j.id } }));
       void load2();
       set((s) => ({ updView: { ...s.updView, [name]: j } }));

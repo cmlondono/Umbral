@@ -2,6 +2,8 @@ import type { Derived } from '../../state/derive';
 import { adapter, run, set, useStore } from '../../state/store';
 import { ActButton, Badge, Empty, Icon, Panel, Search, Seg, act, agoIso, fmt, memLabel, st } from '../../design/ui';
 import { usePaged } from '../../design/Pager';
+import { DockerSpace } from './DockerSpace';
+import { Disponibilidad } from './Disponibilidad';
 import { doUpdate, openUrl, removeImages } from '../../state/actions';
 import { imgBadge } from '../../app/Layers';
 import { openWizard, openWizardForImage } from './Wizard';
@@ -13,7 +15,7 @@ export function Servicios({ d }: { d: Derived }) {
     <>
       <div>
         <Seg role="tablist" label="Apartados de servicios" value={s.svcTab} onChange={(v) => set({ svcTab: v })}
-          options={[['containers', 'Contenedores'], ['images', 'Imágenes'], ['updates', 'Actualizaciones']]}
+          options={[['containers', 'Contenedores'], ['images', 'Imágenes'], ['updates', 'Actualizaciones'], ['avail', 'Disponibilidad']]}
           counts={{ containers: d.ctrs.length, images: imgs.length, updates: d.updatesAvail }} />
       </div>
       {!d.s.docker.available && d.srvOn && (
@@ -22,6 +24,7 @@ export function Servicios({ d }: { d: Derived }) {
       {s.svcTab === 'containers' && <Contenedores d={d} />}
       {s.svcTab === 'images' && <Imagenes d={d} />}
       {s.svcTab === 'updates' && <Actualizaciones d={d} />}
+      {s.svcTab === 'avail' && <Disponibilidad d={d} />}
     </>
   );
 }
@@ -128,6 +131,7 @@ function Imagenes({ d }: { d: Derived }) {
   const blocked = d.serverBlocked || (!d.s.docker.available ? 'Docker no responde.' : '');
 
   return (
+    <>
     <Panel title="Imágenes en el servidor" id="img-h"
       hint={<span className="hint" style={{ display: 'block' }}>{(d.srvOn ? '' : 'Último estado conocido. ') + imgs.length + ' imágenes, ' + memLabel(total) + ' en el disco' + (reclaim ? '. Se pueden liberar ' + memLabel(reclaim) + '.' : '.')}</span>}
       right={<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -168,6 +172,8 @@ function Imagenes({ d }: { d: Derived }) {
       )}
       {rows.length > 0 && pg.pager}
     </Panel>
+    <DockerSpace blocked={blocked} />
+    </>
   );
 }
 
@@ -182,14 +188,17 @@ function Actualizaciones({ d }: { d: Derived }) {
       <Panel title="Actualizaciones de imágenes" id="up-h" hint={<span className="hint" style={{ display: 'block' }}>{hint}</span>}
         right={<button className="btn btn-sm" disabled={!!blocked || u.checking} onClick={() => void run('No se pudo buscar', () => adapter().checkUpdates())}><Icon name={u.checking ? 'loader' : 'refresh'} className={u.checking ? 'i spin' : 'i'} />{u.checking ? 'Buscando…' : 'Buscar ahora'}</button>}>
         <p className="small muted" style={{ margin: 0, padding: '0 var(--pad) 6px' }}>
-          Nada se actualiza solo. El servidor compara una vez al día cada imagen con su registro, sin descargarla{u.lastCheck ? ' (última vez: ' + agoIso(u.lastCheck).toLowerCase() + ')' : ''}. Solo detecta versiones nuevas de la misma etiqueta; para cambiar de versión mayor, despliega con otra etiqueta.
+          Nada se actualiza solo. El servidor compara una vez al día cada imagen con su registro, sin descargarla{u.lastCheck ? ' (última vez: ' + agoIso(u.lastCheck).toLowerCase() + ')' : ''}. Detecta versiones nuevas de la misma etiqueta y, en Nextcloud, también la siguiente versión mayor.
         </p>
         {u.items.length ? (
           <div>
             {u.items.map((it) => {
               const jobRunning = !!s.updJobs[it.container] || it.state === 'updating' || it.state === 'reverting';
-              const badge = it.state === 'updating' ? st('restarting', 'Actualizando…') : it.state === 'reverting' ? st('restarting', 'Revirtiendo…') : it.state === 'updated' ? st('ok', 'Actualizada') : it.image.startsWith('nextcloud') ? st('warn', 'Versión nueva') : st('update');
-              const a = it.state === 'updated'
+              const ctrCompose = d.s.docker.containers.find((c) => c.name === it.container)?.compose;
+              const majorTag = it.nextMajor ? it.nextMajor.split(':')[1] || it.nextMajor : '';
+              const majorAct = it.nextMajor ? act({ label: jobRunning ? 'Actualizando…' : 'Pasar a la ' + majorTag, icon: 'download', kind: it.state === 'major' ? 'primary' : undefined, spin: jobRunning && it.state === 'major', run: () => doUpdate(it.container, it.image, false, it.nextMajor), blocked: blocked || (jobRunning ? 'Hay una acción en curso.' : '') || (it.state === 'available' ? 'Primero aplica la actualización pendiente de tu versión actual.' : '') }) : null;
+              const badge = it.state === 'major' ? st('update', 'Versión mayor nueva') : it.state === 'updating' ? st('restarting', 'Actualizando…') : it.state === 'reverting' ? st('restarting', 'Revirtiendo…') : it.state === 'updated' ? st('ok', 'Actualizada') : it.image.startsWith('nextcloud') ? st('warn', 'Versión nueva') : st('update');
+              const a = it.state === 'major' ? majorAct! : it.state === 'updated'
                 ? act({ label: 'Revertir', icon: 'restart', run: () => doUpdate(it.container, it.image, true), blocked: blocked || (jobRunning ? 'Hay una acción en curso.' : '') || (it.image.startsWith('nextcloud') ? 'Nextcloud no se puede revertir: ya actualizó su base de datos.' : '') })
                 : act({ label: jobRunning ? 'Actualizando…' : 'Actualizar', icon: 'download', kind: 'primary', spin: jobRunning, run: () => doUpdate(it.container, it.image, false), blocked: blocked || (jobRunning ? 'Hay una acción en curso.' : '') });
               return (
@@ -200,6 +209,14 @@ function Actualizaciones({ d }: { d: Derived }) {
                     <span className="sub" style={{ marginTop: 3, color: it.error ? 'var(--err)' : 'var(--ink2)' }}>{it.error || (it.state === 'updated' ? (it.image.startsWith('nextcloud') ? 'Actualizada. Nextcloud no se puede revertir desde el panel; para volver atrás hace falta una copia de seguridad.' : 'Se conserva la imagen anterior para poder revertir durante 7 días, salvo que liberes espacio en Imágenes.') : it.image.startsWith('nextcloud') ? 'Hay una versión nueva de esta etiqueta. Antes de actualizar, haz una copia de seguridad.' : 'Hay una compilación nueva de esta etiqueta en el registro.')}</span>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}><Badge s={badge} /><ActButton a={a} /></div>
+                  {it.nextMajor && it.state !== 'updating' && (
+                    <div className="major-box">
+                      <span className="strong small">Versión mayor nueva: <span className="mono">{it.nextMajor}</span></span>
+                      <span className="sub">Nextcloud solo admite subir de una versión mayor en una, y el panel lo hace con el mismo cuidado: mantenimiento, copia de la base de datos y comprobación.{it.state === 'available' ? ' Antes, aplica la actualización pendiente de tu versión actual.' : ''}</span>
+                      {ctrCompose && <span className="sub" style={{ color: 'var(--warn)' }}>Este contenedor viene de Docker Compose (pila {ctrCompose}). Después cambia la etiqueta a <span className="mono">{majorTag}</span> en tu docker-compose.yml: si lo vuelves a levantar con la etiqueta antigua, Nextcloud no arrancará.</span>}
+                      {it.state !== 'major' && majorAct && <span style={{ marginTop: 6 }}><ActButton a={majorAct} /></span>}
+                    </div>
+                  )}
                   {s.updView[it.container] && <UpdProgress job={s.updView[it.container]} />}
                 </div>
               );

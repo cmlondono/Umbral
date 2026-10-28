@@ -3,6 +3,7 @@ import type { Derived } from '../../state/derive';
 import { adapter, run, set, useStore } from '../../state/store';
 import { ActButton, Badge, Icon, Panel, act, agoIso, st } from '../../design/ui';
 import { TOOLS, copySsh, openUrl, pcActions, sshCommand, toolObj } from '../../state/actions';
+import { Publicar } from './Publicar';
 
 export function AccesoRemoto({ d }: { d: Derived }) {
   const s = useStore();
@@ -80,7 +81,7 @@ export function AccesoRemoto({ d }: { d: Derived }) {
           <div className="row-actions"><ActButton a={act({ label: 'Abrir consola de Tailscale', kind: 'external', run: () => openUrl('la consola de Tailscale', 'https://login.tailscale.com/admin/machines') })} /></div>
         </div></div>
         <p className="small muted" style={{ margin: 0, padding: '0 var(--pad) 12px 68px' }}>
-          Desde fuera de casa, activa Tailscale en tu iPhone o portátil y abre {ts.self ? 'http://' + ts.self.dnsName + ':8420' : 'este panel con el nombre de Tailscale del servidor'}. El panel no se expone a Internet: solo responde en la red local y en Tailscale.
+          Desde fuera de casa, activa Tailscale en tu iPhone o portátil y abre {ts.self ? (ts.serve?.some((e) => e.local === d.s.panel.port) ? ts.serve.find((e) => e.local === d.s.panel.port)!.url : 'http://' + ts.self.dnsName + ':' + (d.s.panel.port || 8420)) : 'este panel con el nombre de Tailscale del servidor'}. El panel no se expone a Internet: solo responde en la red local y en Tailscale.
         </p>
         {ts.peers.length > 0 && (
           <div style={{ borderTop: '1px solid var(--line)' }}>
@@ -96,6 +97,7 @@ export function AccesoRemoto({ d }: { d: Derived }) {
           </div>
         )}
       </Panel>
+      <Publicar d={d} />
     </>
   );
 }

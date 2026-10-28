@@ -1,4 +1,4 @@
-import type { AuthStatus, CatalogApp, Config, DeploySpec, History, HookURLs, Job, LivePoint, Range, Rule, Session, Snapshot } from './types';
+import type { AccessEvent, AuthStatus, Backups, RouterConfig, RouterInfo, CatalogApp, Config, ContainerDetails, DeploySpec, DockerDisk, History, HookURLs, Job, LivePoint, LogLine, Range, Rule, Session, Snapshot } from './types';
 
 /* Interfaz única entre el panel y el servidor. La implementación real habla
  * con el servicio de Umbral (Go) en el mismo origen. */
@@ -22,10 +22,30 @@ export interface Adapter {
   containerAction(name: string, action: 'start' | 'stop' | 'restart' | 'remove'): Promise<Snapshot>;
   pullImage(ref: string): Promise<Job>;
   removeImages(items: { id: string; ref: string }[]): Promise<Snapshot>;
+  logs(name: string, lines: number): Promise<{ lines: LogLine[]; at: string }>;
+  details(name: string): Promise<ContainerDetails>;
+  setMemory(name: string, mb: number): Promise<Snapshot>;
+  dockerDisk(): Promise<DockerDisk>;
+  accessLog(): Promise<AccessEvent[]>;
+  systemCheck(): Promise<Snapshot>;
+  testRouter(c: RouterConfig, password?: string): Promise<RouterInfo>;
+  saveRouter(c: RouterConfig, password?: string): Promise<Snapshot>;
+  routerOp(op: 'block' | 'unblock' | 'reboot', mac?: string): Promise<Snapshot>;
+  publish(port: number, local: number, label: string): Promise<Snapshot>;
+  unpublish(port: number, label: string): Promise<Snapshot>;
+  backups(): Promise<Backups>;
+  copyBackups(): Promise<Backups & { copied: number }>;
+  saveNotify(server: string, topic: string, token?: string): Promise<Snapshot>;
+  newTopic(): Promise<{ topic: string }>;
+  testNotify(): Promise<{ ok: boolean }>;
+  pruneBuildCache(): Promise<{ freedMB: number }>;
+  removeVolume(name: string): Promise<{ ok: boolean }>;
   backupDatabase(container: string): Promise<{ path: string; sizeKB: number; database: string }>;
   deploy(spec: DeploySpec): Promise<Job>;
   checkUpdates(): Promise<Snapshot>;
   applyUpdate(name: string): Promise<Job>;
+  applyMajor(name: string): Promise<Job>;
+  backupNextcloud(): Promise<Job>;
   revertUpdate(name: string): Promise<Job>;
 
   wakePc(): Promise<Snapshot>;
@@ -96,10 +116,30 @@ export const httpAdapter: Adapter = {
   containerAction: (name, action) => call('POST', `/api/containers/${encodeURIComponent(name)}/${action}`, action === 'start' ? {} : confirm),
   pullImage: (ref) => call('POST', '/api/images/pull', { ref }),
   removeImages: (items) => call('POST', '/api/images/remove', { items, confirm: true }),
+  logs: (name, lines) => call('GET', `/api/containers/${encodeURIComponent(name)}/logs?lineas=${lines}`),
+  details: (name) => call('GET', `/api/containers/${encodeURIComponent(name)}/details`),
+  setMemory: (name, mb) => call('POST', `/api/containers/${encodeURIComponent(name)}/memory`, { mb, confirm: true }),
+  dockerDisk: () => call('GET', '/api/docker/disk'),
+  accessLog: () => call('GET', '/api/access'),
+  systemCheck: () => call('POST', '/api/system/check', {}),
+  testRouter: (c, password) => call('POST', '/api/router/test', { ...c, ...(password !== undefined ? { password } : {}) }),
+  saveRouter: (c, password) => call('PUT', '/api/router', { ...c, ...(password !== undefined ? { password } : {}) }),
+  routerOp: (op, mac) => call('POST', '/api/router/' + op, { mac: mac || '', confirm: true }),
+  publish: (port, local, label) => call('POST', '/api/tailscale/serve', { port, local, label }),
+  unpublish: (port, label) => call('POST', `/api/tailscale/serve/${port}/off`, { confirm: true, label }),
+  backups: () => call('GET', '/api/backups'),
+  copyBackups: () => call('POST', '/api/backups/copy', {}),
+  saveNotify: (server, topic, token) => call('PUT', '/api/notify', { server, topic, ...(token !== undefined ? { token } : {}) }),
+  newTopic: () => call('GET', '/api/notify/topic'),
+  testNotify: () => call('POST', '/api/notify/test', {}),
+  pruneBuildCache: () => call('POST', '/api/docker/build-cache/prune', confirm),
+  removeVolume: (name) => call('POST', `/api/docker/volumes/${encodeURIComponent(name)}/remove`, confirm),
   backupDatabase: (container) => call('POST', `/api/containers/${encodeURIComponent(container)}/backup`, {}),
   deploy: (spec) => call('POST', '/api/deploy', spec),
   checkUpdates: () => call('POST', '/api/updates/check', {}),
   applyUpdate: (name) => call('POST', `/api/updates/${encodeURIComponent(name)}/apply`, confirm),
+  applyMajor: (name) => call('POST', `/api/updates/${encodeURIComponent(name)}/major`, confirm),
+  backupNextcloud: () => call('POST', '/api/backups/nextcloud', {}),
   revertUpdate: (name) => call('POST', `/api/updates/${encodeURIComponent(name)}/revert`, confirm),
 
   wakePc: () => call('POST', '/api/pc/wake', {}),

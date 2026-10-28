@@ -7,6 +7,8 @@ import { usePaged } from '../../design/Pager';
 import { copySsh, openUrl, sshCommand } from '../../state/actions';
 import { peak } from './charts';
 import { Chart } from './Chart';
+import { SaludDiscos, SistemaOperativo } from './Sistema';
+import { Copias } from './Copias';
 import { LIVE_POINTS, LIVE_STEP, useLive } from './live';
 
 const XL: Record<View, string[]> = { live: ['−5 min', '−4', '−3', '−2', '−1', 'Ahora'], '1h': ['−60 min', '−45', '−30', '−15', 'Ahora'], '24h': ['−24 h', '−18 h', '−12 h', '−6 h', 'Ahora'], '7d': ['−7 d', '−5 d', '−3 d', '−1 d', 'Hoy'] };
@@ -127,6 +129,10 @@ export function Servidor({ d }: { d: Derived }) {
         )}
         {(m?.disks.length || 0) > 0 && disks.pager}
       </Panel>
+
+      <SaludDiscos d={d} />
+      <SistemaOperativo d={d} />
+      {d.hasNC && <Copias d={d} />}
 
       <Panel title="Herramientas de administración" id="tools-h">
         <div>

@@ -30,12 +30,16 @@ export const TRIGGERS: { kind: Trigger['kind']; label: string; icon: IconName; h
   { kind: 'metric', label: 'Un recurso se dispara', icon: 'activity', hint: 'CPU, memoria, disco o temperatura' },
   { kind: 'presence', label: 'Llega o se va alguien', icon: 'phone', hint: 'Un dispositivo entra o sale de la red' },
   { kind: 'pc', label: 'El PC cambia', icon: 'monitor', hint: 'Se enciende o se apaga' },
+  { kind: 'access', label: 'Acceso al panel', icon: 'lock', hint: 'Bloqueo, equipo nuevo o entrada' },
 ];
 
 export const STEPS: { kind: Step['kind']; label: string; icon: IconName }[] = [
+  { kind: 'notify', label: 'Avisar al móvil', icon: 'bell' },
   { kind: 'wake', label: 'Encender el PC', icon: 'power' },
   { kind: 'container', label: 'Iniciar, detener o reiniciar un servicio', icon: 'boxes' },
   { kind: 'backup', label: 'Copia de la base de datos de Nextcloud', icon: 'download' },
+  { kind: 'copy-backups', label: 'Copiar las copias al disco externo', icon: 'disk' },
+  { kind: 'nc-full', label: 'Copia completa de Nextcloud al disco externo', icon: 'disk' },
   { kind: 'wait', label: 'Esperar', icon: 'clock' },
   { kind: 'scan', label: 'Escanear la red', icon: 'radar' },
   { kind: 'updates', label: 'Buscar actualizaciones', icon: 'refresh' },
@@ -60,6 +64,7 @@ export function triggerText(t: Trigger, s: Snapshot | null) {
     case 'metric': { const [w, u] = METRIC[t.metric || 'cpu']; return 'Cuando ' + w + ' supera ' + (t.above ?? '—') + ' ' + u + dur; }
     case 'presence': return 'Cuando ' + deviceName(s, t.mac) + (t.event === 'leave' ? ' se va de casa' : ' llega a casa');
     case 'pc': return 'Cuando el PC se ' + (t.event === 'off' ? 'apaga' : 'enciende');
+    case 'access': return ({ locked: 'Cuando se bloquea el acceso por intentos fallidos', newip: 'Cuando alguien entra al panel desde un equipo nuevo', login: 'Cuando alguien entra al panel' } as Record<string, string>)[t.event || 'locked'];
   }
 }
 
@@ -82,6 +87,9 @@ export function stepText(st: Step) {
     case 'scan': return 'escanear la red';
     case 'updates': return 'buscar actualizaciones';
     case 'http': return 'llamar a ' + (st.url || 'una dirección');
+    case 'copy-backups': return 'copiar las copias al disco externo';
+    case 'nc-full': return 'hacer la copia completa de Nextcloud (base de datos y archivos) en el disco externo';
+    case 'notify': return 'avisar al móvil' + (st.priority === 5 ? ' (urgente)' : st.priority === 4 ? ' (prioridad alta)' : '');
   }
 }
 
@@ -107,8 +115,8 @@ export function templates(s: Snapshot): { id: string; title: string; desc: strin
   let list: { id: string; title: string; desc: string; icon: IconName; rule: Rule; needs?: string }[] = [
     { id: 'nc-restart', title: 'Reiniciar Nextcloud si deja de responder', desc: 'Si no responde 5 minutos seguidos, reinicia su contenedor. Como mucho una vez cada 30 min.', icon: 'cloud',
       rule: { ...blank(), name: 'Reiniciar Nextcloud si deja de responder', trigger: { kind: 'app', forMin: 5 }, steps: [{ kind: 'container', container: nc, op: 'restart' }], cooldownMin: 30 } },
-    { id: 'nc-backup', title: 'Copia nocturna de Nextcloud', desc: 'Cada día a las 3:00 copia la base de datos. Se guardan las 5 más recientes.', icon: 'download',
-      rule: { ...blank(), name: 'Copia nocturna de Nextcloud', trigger: { kind: 'schedule', days: [0, 1, 2, 3, 4, 5, 6], time: '03:00' }, steps: [{ kind: 'backup' }], cooldownMin: 0 } },
+    { id: 'nc-backup', title: 'Copia nocturna de Nextcloud', desc: s.config.backupCopyDir ? 'Cada día a las 3:00 copia la base de datos y todos los archivos al disco externo, y te avisa si falla.' : 'Cada día a las 3:00 copia la base de datos. Se guardan las 5 más recientes.', icon: 'download',
+      rule: { ...blank(), name: 'Copia nocturna de Nextcloud', trigger: { kind: 'schedule', days: [0, 1, 2, 3, 4, 5, 6], time: '03:00' }, steps: s.config.backupCopyDir ? [{ kind: 'nc-full' }] : [{ kind: 'backup' }], cooldownMin: 0, notifyFail: s.notify.configured } },
     { id: 'svc-heal', title: 'Volver a arrancar un servicio que se cae', desc: 'Si un servicio se detiene durante 2 minutos, lo inicia otra vez.', icon: 'boxes',
       rule: { ...blank(), name: 'Volver a arrancar un servicio', trigger: { kind: 'container', container: s.docker.containers[0]?.name || '', event: 'stopped', forMin: 2 }, steps: [{ kind: 'container', container: s.docker.containers[0]?.name || '', op: 'start' }], cooldownMin: 15 } },
     { id: 'pc-nfc', title: 'Encender el PC con el iPhone o una etiqueta NFC', desc: 'El panel te da un enlace para Atajos. Lo tocas y el PC se enciende.', icon: 'nfc', needs: pcOk ? undefined : 'Necesita el PC configurado.',
@@ -118,6 +126,17 @@ export function templates(s: Snapshot): { id: string; title: string; desc: strin
     { id: 'pc-work', title: 'Encender el PC los días laborables', desc: 'De lunes a viernes a las 7:30, y comprueba que responde.', icon: 'clock', needs: pcOk ? undefined : 'Necesita el PC configurado.',
       rule: { ...blank(), name: 'Encender el PC los días laborables', trigger: { kind: 'schedule', days: [1, 2, 3, 4, 5], time: '07:30' }, steps: [{ kind: 'wake', waitOn: true }], cooldownMin: 0 } },
   ];
+  const nt = s.notify.configured ? undefined : 'Necesita los avisos configurados (Ajustes › Avisos).';
+  list.unshift(
+    { id: 'ntf-down', title: 'Avisarme si un servicio se cae', desc: 'Si un servicio lleva 3 minutos detenido, te llega un aviso al móvil.', icon: 'bell', needs: nt,
+      rule: { ...blank(), name: 'Avisar si se cae ' + (s.docker.containers[0]?.name || 'un servicio'), trigger: { kind: 'container', container: s.docker.containers[0]?.name || '', event: 'stopped', forMin: 3 }, steps: [{ kind: 'notify', text: 'El servicio se ha detenido.', priority: 4 }], cooldownMin: 30 } },
+    { id: 'ntf-lock', title: 'Avisarme si alguien intenta entrar', desc: 'Cuando el panel bloquea un equipo por 5 contraseñas incorrectas seguidas.', icon: 'lock', needs: nt,
+      rule: { ...blank(), name: 'Aviso de intentos de acceso', trigger: { kind: 'access', event: 'locked' }, steps: [{ kind: 'notify', text: 'Alguien ha fallado la contraseña 5 veces.', priority: 5 }], cooldownMin: 5 } },
+    { id: 'ntf-new', title: 'Avisarme de entradas desde un equipo nuevo', desc: 'Cuando alguien entra al panel desde una dirección que nunca había usado.', icon: 'shield', needs: nt,
+      rule: { ...blank(), name: 'Entrada desde un equipo nuevo', trigger: { kind: 'access', event: 'newip' }, steps: [{ kind: 'notify', priority: 4 }], cooldownMin: 0 } },
+  );
+  if (hasNC) list.splice(3, 0, { id: 'nc-ntf', title: 'Avisarme si Nextcloud no responde', desc: 'Si Nextcloud no responde 5 minutos seguidos, te avisa al móvil.', icon: 'cloud', needs: nt,
+    rule: { ...blank(), name: 'Avisar si Nextcloud no responde', trigger: { kind: 'app', forMin: 5 }, steps: [{ kind: 'notify', text: 'Nextcloud no responde.', priority: 5 }], cooldownMin: 60 } });
   if (!hasNC) list = list.filter((t) => !t.id.startsWith('nc-'));
   if (s.metrics?.tempC != null) list.push({ id: 'hot', title: 'Aliviar el servidor si se calienta', desc: 'Si la temperatura pasa de 85 °C durante 5 min, detiene el servicio que elijas.', icon: 'activity',
     rule: { ...blank(), name: 'Aliviar el servidor si se calienta', trigger: { kind: 'metric', metric: 'temp', above: 85, forMin: 5 }, steps: [{ kind: 'container', container: '', op: 'stop' }], cooldownMin: 60 } });

@@ -89,6 +89,7 @@ export interface Tailscale {
   error: string | null;
   self: { name: string; ip: string; dnsName: string } | null;
   peers: TailscalePeer[];
+  serve: ServeEntry[];
 }
 
 export interface NetDevice {
@@ -102,6 +103,7 @@ export interface NetDevice {
   firstSeen: string;
   lastSeen: string;
   registered: 'server' | 'pc' | null;
+  blocked?: boolean;
 }
 
 export interface Network { subnet: string; gateway: string; iface: string; lastScan: string | null; devices: NetDevice[] }
@@ -109,10 +111,11 @@ export interface Network { subnet: string; gateway: string; iface: string; lastS
 export interface Update {
   container: string;
   image: string;
-  state: 'available' | 'updating' | 'updated' | 'reverting' | 'failed';
+  state: 'available' | 'major' | 'updating' | 'updated' | 'reverting' | 'failed';
   checkedAt: string;
   previousImageId: string | null;
   error: string | null;
+  nextMajor?: string;
 }
 
 export interface Updates { lastCheck: string | null; checking: boolean; items: Update[] }
@@ -120,7 +123,7 @@ export interface Updates { lastCheck: string | null; checking: boolean; items: U
 export interface HistoryItem { at: string; target: string; action: string; result: 'ok' | 'error'; detail: string; user: string }
 
 export interface Trigger {
-  kind: 'schedule' | 'container' | 'app' | 'metric' | 'presence' | 'pc' | 'hook';
+  kind: 'schedule' | 'container' | 'app' | 'metric' | 'presence' | 'pc' | 'hook' | 'access';
   days?: number[];
   time?: string;
   container?: string;
@@ -144,13 +147,15 @@ export interface Condition {
 }
 
 export interface Step {
-  kind: 'wake' | 'container' | 'backup' | 'scan' | 'wait' | 'http' | 'updates';
+  kind: 'wake' | 'container' | 'backup' | 'scan' | 'wait' | 'http' | 'updates' | 'notify' | 'copy-backups' | 'nc-full';
   container?: string;
   op?: 'start' | 'stop' | 'restart';
   waitOn?: boolean;
   minutes?: number;
   url?: string;
   method?: 'GET' | 'POST';
+  text?: string;
+  priority?: number;
 }
 
 export interface Rule {
@@ -161,6 +166,7 @@ export interface Rule {
   conditions: Condition[];
   steps: Step[];
   cooldownMin: number;
+  notifyFail?: boolean;
   created?: string;
   lastRun?: { at: string; result: 'ok' | 'error' | 'skipped'; detail: string } | null;
   hasHook?: boolean;
@@ -192,7 +198,10 @@ export interface Config {
   sshUser: string;
   dataRoot: string;
   scanMinutes: number;
-  router: { ip: string; model: string };
+  router: RouterConfig;
+  backupCopyDir: string;
+  ncBackupKeep: number;
+  ncBackupMaint: boolean;
 }
 
 export interface Snapshot {
@@ -212,8 +221,42 @@ export interface Snapshot {
   config: Config;
   jobs: Job[];
   internet: boolean | null;
-  panel: { version: string; memMB: number; uptimeSec: number; dataDir: string };
+  panel: { version: string; memMB: number; uptimeSec: number; dataDir: string; port: number };
+  notify: NotifyView;
+  avail: AvailView[];
+  incidents: Incident[];
+  system: SystemState;
+  router: RouterState;
 }
+
+export interface RouterConfig { kind: '' | 'openwrt' | 'mikrotik'; url: string; user: string; insecure: boolean }
+export interface RouterInfo { model: string; firmware: string; uptimeSec: number; hostname: string }
+export interface RouterState { configured: boolean; kind: string; connected: boolean; error: string; info: RouterInfo | null; blocked: string[]; leases: number; checkedAt: string | null; hasPassword: boolean }
+export interface ServeEntry { port: number; target: string; url: string; local: number }
+
+export interface SmartDisk { name: string; model: string; serial: string; sizeGB: number; kind: 'nvme' | 'ssd' | 'hdd' | ''; supported: boolean; passed: boolean | null; tempC: number | null; hours: number | null; reallocated: number | null; pending: number | null; uncorrectable: number | null; percentUsed: number | null; mediaErrors: number | null; health: 'ok' | 'warn' | 'fail' | 'unknown'; note: string }
+export interface AptPkg { name: string; from: string; to: string; security: boolean }
+export interface SystemState {
+  helperInstalled: boolean; requested: string | null;
+  smart: { at: string; available: boolean; disks: SmartDisk[] } | null;
+  aptAvailable: boolean; aptCheckedAt: string | null; aptError: string; listsAt: string | null;
+  listsUpdate: { at: string; ok: boolean; error: string } | null;
+  packages: AptPkg[]; security: number; reboot: boolean; rebootPkgs: string[] | null; unattended: boolean;
+}
+export interface BackupFile { name: string; db: string; sizeKB: number; at: string; copied: boolean }
+export interface CopyDirStatus { path: string; ok: boolean; problem: string; freeGB: number; sameDisk: boolean; files: number; lastCopy: string }
+export interface FileSnapshot { name: string; at: string; ok: boolean; error: string; files: number; transferredMB: number; totalMB: number; seconds: number; maintenance: boolean; exists: boolean }
+export interface Backups { files: BackupFile[]; copyDir: CopyDirStatus | null; ncFiles?: FileSnapshot[] }
+
+export interface NotifyView { configured: boolean; server: string; topic: string; hasToken: boolean }
+export interface AvailView { target: string; pct24h: number | null; pct7d: number | null; hours: number; down: string | null }
+export interface Incident { target: string; from: string; to: string | null }
+export interface AccessEvent { at: string; user: string; ip: string; kind: 'login' | 'fail' | 'locked' | 'logout' | 'password' | 'totp-on' | 'totp-off'; agent: string; new: boolean }
+
+export interface LogLine { at: string; text: string; err: boolean }
+export interface ContainerDetails { memLimitMB: number; restart: string; createdAt: string; mounts: { type: string; name: string; source: string; destination: string }[] | null }
+export interface DockerVolume { name: string; sizeMB: number; createdAt: string; stack: string; anonymous: boolean }
+export interface DockerDisk { buildCacheMB: number; unused: DockerVolume[]; volumesMB: number; imagesMB: number }
 
 export interface LivePoint { at: string; cpu: number; rx: number; tx: number; mem: number; temp: number | null }
 

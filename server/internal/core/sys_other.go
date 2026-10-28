@@ -24,3 +24,7 @@ func ReadServerInfo() ServerInfo {
 func defaultRoute() (string, net.IP) { return "", nil }
 
 func readARP() []arpEntry { return nil }
+
+func sameDevice(a, b string) bool { return false }
+
+func freeGB(p string) int64 { return -1 }

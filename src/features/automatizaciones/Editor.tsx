@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Condition, HookURLs, Rule, Step, Trigger } from '../../data/types';
 import type { Derived } from '../../state/derive';
-import { accept, adapter } from '../../state/store';
+import { accept, adapter, nav } from '../../state/store';
 import { Icon, Seg } from '../../design/ui';
 import { CONDITIONS, DAY_NAMES, DAY_SHORT, STEPS, TRIGGERS, WEEK, sentence } from './rules';
 
@@ -38,7 +38,7 @@ export function Editor({ d, initial, onClose, onHook }: { d: Derived; initial: R
   const [busy, setBusy] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const s = d.s;
-  const steps = STEPS.filter((x) => x.kind !== 'backup' || d.hasNC);
+  const steps = STEPS.filter((x) => (x.kind !== 'backup' && x.kind !== 'copy-backups' && x.kind !== 'nc-full') || d.hasNC);
   const triggers = TRIGGERS.filter((x) => x.kind !== 'app' || d.hasNC);
   const containers: [string, string][] = s.docker.containers.map((c) => [c.name, c.name]);
   const devices: [string, string][] = s.network.devices.filter((v) => v.ip !== s.network.gateway && v.registered !== 'server')
@@ -61,6 +61,7 @@ export function Editor({ d, initial, onClose, onHook }: { d: Derived; initial: R
       schedule: { kind, days: [1, 2, 3, 4, 5], time: '07:30' }, hook: { kind },
       container: { kind, container: containers[0]?.[0] || '', event: 'stopped', forMin: 2 }, app: { kind, forMin: 5 },
       metric: { kind, metric: 'temp', above: 85, forMin: 5 }, presence: { kind, mac: '', event: 'arrive' }, pc: { kind, event: 'on' },
+      access: { kind, event: 'locked' },
     };
     setR({ ...r, trigger: def[kind] });
   };
@@ -71,7 +72,7 @@ export function Editor({ d, initial, onClose, onHook }: { d: Derived; initial: R
   };
   const addStep = (kind: Step['kind']) => {
     const def: Record<Step['kind'], Step> = { wake: { kind, waitOn: true }, container: { kind, container: containers[0]?.[0] || '', op: 'restart' }, backup: { kind },
-      wait: { kind, minutes: 5 }, scan: { kind }, updates: { kind }, http: { kind, url: 'http://', method: 'POST' } };
+      wait: { kind, minutes: 5 }, scan: { kind }, updates: { kind }, http: { kind, url: 'http://', method: 'POST' }, notify: { kind, text: '', priority: 3 }, 'copy-backups': { kind }, 'nc-full': { kind } };
     setR({ ...r, steps: [...r.steps, def[kind]] });
   };
 
@@ -132,6 +133,9 @@ export function Editor({ d, initial, onClose, onHook }: { d: Derived; initial: R
                   <Select label="Dispositivo" value={t.mac} onChange={(v) => setT({ mac: v })} options={devices} placeholder="Elige un dispositivo" />
                   <Seg label="Qué hace" value={t.event || 'arrive'} onChange={(v) => setT({ event: v })} options={[['arrive', 'Se conecta'], ['leave', 'Se desconecta']]} />
                   <span className="small muted" style={{ flexBasis: '100%' }}>{presenceNote}{t.event === 'leave' ? ' Al irse espera 15 min, porque los móviles apagan el Wi‑Fi a ratos.' : ''}</span></>}
+                {t.kind === 'access' && <>
+                  <Seg label="Qué acceso" value={t.event || 'locked'} onChange={(v) => setT({ event: v })} options={[['locked', 'Bloqueo por intentos'], ['newip', 'Equipo nuevo'], ['login', 'Cualquier entrada']]} />
+                  <span className="small muted" style={{ flexBasis: '100%' }}>{t.event === 'login' ? 'Cada vez que alguien inicia sesión en el panel.' : t.event === 'newip' ? 'La primera vez que alguien entra desde una dirección IP que nunca había usado.' : 'Cuando un equipo falla la contraseña 5 veces seguidas y queda bloqueado 15 minutos.'} Es útil con la acción «Avisar al móvil».</span></>}
                 {t.kind === 'pc' && (s.pc.configured
                   ? <Seg label="El PC" value={t.event || 'on'} onChange={(v) => setT({ event: v })} options={[['on', 'Se enciende'], ['off', 'Se apaga']]} />
                   : <span className="small" style={{ color: 'var(--err)' }}>Primero configura el PC en Ajustes › Dispositivos registrados.</span>)}
@@ -165,6 +169,21 @@ export function Editor({ d, initial, onClose, onHook }: { d: Derived; initial: R
                     <Select label="Servicio" value={st.container} onChange={(v) => setS(i, { container: v })} options={containers} placeholder="Elige un servicio" /></>}
                   {st.kind === 'backup' && <span className="strong small">Copia de la base de datos de Nextcloud <span className="muted" style={{ fontWeight: 400 }}>· en {s.config.dataRoot}/copias, se guardan las 5 últimas</span></span>}
                   {st.kind === 'wait' && <><span className="strong small">Esperar</span><Num label="Minutos" value={st.minutes} onChange={(v) => setS(i, { minutes: Math.max(1, v) })} min={1} max={120} unit="min" /></>}
+                  {st.kind === 'notify' && <>
+                    <span className="strong small">Avisar al móvil</span>
+                    <Seg label="Prioridad" value={String(st.priority || 3)} onChange={(v) => setS(i, { priority: Number(v) })} options={[['3', 'Normal'], ['4', 'Alta'], ['5', 'Urgente']]} />
+                    <input className="inp" aria-label="Mensaje del aviso" value={st.text || ''} maxLength={500} onChange={(e) => setS(i, { text: e.target.value })} placeholder="Mensaje (opcional)" style={{ height: 34, flex: '1 1 260px' }} />
+                    {s.notify.configured
+                      ? <span className="small muted" style={{ flexBasis: '100%' }}>El aviso lleva el nombre de la automatización como título y el motivo al final.</span>
+                      : <span className="small" style={{ flexBasis: '100%', color: 'var(--err)' }}>Los avisos aún no están configurados. <button type="button" className="link-btn" onClick={() => { onClose(); nav('settings', { setTab: 'notify' }); }}>Configurarlos en Ajustes › Avisos</button></span>}</>}
+                  {st.kind === 'nc-full' && <><span className="strong small">Copia completa de Nextcloud al disco externo</span>
+                    {s.config.backupCopyDir
+                      ? <span className="small muted" style={{ flexBasis: '100%' }}>Base de datos y archivos, en {s.config.backupCopyDir}. Solo copia lo nuevo; se guardan las {s.config.ncBackupKeep || 7} últimas.</span>
+                      : <span className="small" style={{ flexBasis: '100%', color: 'var(--err)' }}>Falta elegir la carpeta externa. <button type="button" className="link-btn" onClick={() => { onClose(); nav('server'); }}>Elegirla en Servidor › Copias de seguridad</button></span>}</>}
+                  {st.kind === 'copy-backups' && <><span className="strong small">Copiar las copias al disco externo</span>
+                    {s.config.backupCopyDir
+                      ? <span className="small muted" style={{ flexBasis: '100%' }}>A {s.config.backupCopyDir}. Solo copia las que aún no están; allí se guardan las 10 últimas.</span>
+                      : <span className="small" style={{ flexBasis: '100%', color: 'var(--err)' }}>Falta elegir la carpeta externa. <button type="button" className="link-btn" onClick={() => { onClose(); nav('server'); }}>Elegirla en Servidor › Copias de seguridad</button></span>}</>}
                   {st.kind === 'scan' && <span className="strong small">Escanear la red</span>}
                   {st.kind === 'updates' && <span className="strong small">Buscar actualizaciones de imágenes</span>}
                   {st.kind === 'http' && <><Seg label="Método" value={st.method || 'POST'} onChange={(v) => setS(i, { method: v })} options={[['POST', 'POST'], ['GET', 'GET']]} />
@@ -179,6 +198,14 @@ export function Editor({ d, initial, onClose, onHook }: { d: Derived; initial: R
               ))}
               {!r.steps.length && <span className="f-msg">Añade al menos una acción. Se ejecutan en orden y se detienen si una falla.</span>}
               <div className="chips">{steps.map((x) => <button type="button" key={x.kind} className="chip" onClick={() => addStep(x.kind)} disabled={r.steps.length >= 10}>+ {x.label}</button>)}</div>
+            </div>
+
+            <div className="field">
+              <label className="small" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input type="checkbox" checked={!!r.notifyFail} disabled={!s.notify.configured} onChange={(e) => setR({ ...r, notifyFail: e.target.checked })} style={{ accentColor: 'var(--accent)' }} />
+                Avisarme al móvil si falla
+              </label>
+              <span className="f-msg">{s.notify.configured ? 'Te llega un aviso con la acción que falló y el motivo.' : <>Necesita los avisos configurados. <button type="button" className="link-btn" onClick={() => { onClose(); nav('settings', { setTab: 'notify' }); }}>Configurarlos en Ajustes › Avisos</button></>}</span>
             </div>
 
             {t.kind !== 'schedule' && (

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -16,6 +18,8 @@ type Update struct {
 	CheckedAt       time.Time `json:"checkedAt"`
 	PreviousImageID *string   `json:"previousImageId"`
 	Error           *string   `json:"error"`
+	// NextMajor: la etiqueta de la siguiente versión mayor (solo Nextcloud), p. ej. nextcloud:31-apache.
+	NextMajor string `json:"nextMajor,omitempty"`
 }
 
 type UpdatesState struct {
@@ -80,6 +84,29 @@ func (a *App) CheckUpdates() {
 			continue
 		}
 		items = append(items, Update{Container: c.Name, Image: ref, State: "available", CheckedAt: now})
+	}
+	// Nextcloud con una etiqueta de versión fija (30, 30-apache, 30.0.2-fpm…):
+	// ¿existe ya la siguiente mayor? Basta una petición HEAD al registro.
+	for _, c := range cs {
+		if !isNextcloudImage(c.Image) || strings.HasSuffix(c.Name, "-anterior") {
+			continue
+		}
+		next, ok := nextMajorRef(c.Image)
+		if !ok {
+			continue
+		}
+		if _, err := RemoteDigest(ctx, next); err != nil {
+			continue
+		}
+		found := false
+		for i := range items {
+			if items[i].Container == c.Name {
+				items[i].NextMajor, found = next, true
+			}
+		}
+		if !found {
+			items = append(items, Update{Container: c.Name, Image: c.Image, State: "major", CheckedAt: now, NextMajor: next})
+		}
 	}
 	if items == nil {
 		items = []Update{}
@@ -146,16 +173,27 @@ func (a *App) findUpdate(name string) (Update, bool) {
 // configuración y los mismos volúmenes. Funciona igual con contenedores de
 // Docker Compose: no necesita leer su archivo. La imagen anterior se conserva
 // para poder revertir.
-func (a *App) ApplyUpdate(user, name string) (*Job, error) {
+func (a *App) ApplyUpdate(user, name string, toMajor bool) (*Job, error) {
 	u, ok := a.findUpdate(name)
-	if !ok || u.State != "available" {
+	img := u.Image
+	switch {
+	case !ok:
+		return nil, errors.New("No hay ninguna actualización pendiente para " + name + ".")
+	case toMajor && u.NextMajor == "":
+		return nil, errors.New("No hay una versión mayor nueva para " + name + ".")
+	case toMajor && u.State == "available":
+		return nil, errors.New("Primero aplica la actualización pendiente de tu versión actual: Nextcloud pide estar al día antes de cambiar de versión mayor.")
+	case toMajor:
+		img = u.NextMajor
+	case u.State != "available":
 		return nil, errors.New("No hay ninguna actualización pendiente para " + name + ".")
 	}
+	prevState := u.State
 	if a.busy("", name) {
 		return nil, errors.New("Ya hay una acción en curso para " + name + ".")
 	}
-	nc := isNextcloudImage(u.Image)
-	steps := []string{"Descargando la versión nueva de " + u.Image, "Comprobando que la versión es compatible"}
+	nc := isNextcloudImage(img)
+	steps := []string{"Descargando la versión nueva de " + img, "Comprobando que la versión es compatible"}
 	if nc {
 		steps = append(steps, "Activando el modo de mantenimiento", "Copia de seguridad de la base de datos")
 	}
@@ -174,7 +212,7 @@ func (a *App) ApplyUpdate(user, name string) (*Job, error) {
 		next := func() { step++; j.step(step) }
 		fail := func(err error) {
 			e := err.Error()
-			a.setUpdate(name, func(x *Update) { x.State, x.Error = "available", &e })
+			a.setUpdate(name, func(x *Update) { x.State, x.Error = prevState, &e })
 			a.Log(user, name, "Actualización", err, "")
 			j.fail(e)
 			a.Refresh("docker")
@@ -188,18 +226,18 @@ func (a *App) ApplyUpdate(user, name string) (*Job, error) {
 		}
 		var oldImg string
 		_ = json.Unmarshal(raw["Image"], &oldImg)
-		if err := a.Docker.Pull(ctx, u.Image, func(p int, _ string) { j.set(func(j *Job) { j.Progress = p / 3 }) }); err != nil {
+		if err := a.Docker.Pull(ctx, img, func(p int, _ string) { j.set(func(j *Job) { j.Progress = p / 3 }) }); err != nil {
 			fail(err)
 			return
 		}
 		next()
-		if err := a.checkMajorJump(ctx, oldImg, u.Image); err != nil {
+		if err := a.checkMajorJump(ctx, oldImg, img); err != nil {
 			fail(err)
 			return
 		}
 		if !nc {
 			next()
-			if err := a.swapImage(ctx, name, raw, u.Image); err != nil {
+			if err := a.swapImage(ctx, name, raw, img); err != nil {
 				fail(err)
 				return
 			}
@@ -208,10 +246,12 @@ func (a *App) ApplyUpdate(user, name string) (*Job, error) {
 				fail(err)
 				return
 			}
-			a.setUpdate(name, func(x *Update) { x.State, x.PreviousImageID, x.CheckedAt = "updated", &oldImg, time.Now() })
-			a.Log(user, name, "Actualización", nil, u.Image)
+			a.setUpdate(name, func(x *Update) {
+				x.State, x.PreviousImageID, x.CheckedAt, x.Image, x.NextMajor = "updated", &oldImg, time.Now(), img, ""
+			})
+			a.Log(user, name, "Actualización", nil, img)
 			a.Refresh("docker")
-			j.finish(name+" ya usa la versión nueva de "+u.Image+".", nil)
+			j.finish(name+" ya usa la versión nueva de "+img+".", nil)
 			return
 		}
 
@@ -236,13 +276,13 @@ func (a *App) ApplyUpdate(user, name string) (*Job, error) {
 		}
 		a.Log(user, db, "Copia de seguridad", nil, backup)
 		next()
-		if err := a.swapImage(ctx, name, raw, u.Image); err != nil {
+		if err := a.swapImage(ctx, name, raw, img); err != nil {
 			maintOff()
 			fail(fmt.Errorf("%v. Nextcloud sigue con la versión anterior y vuelve a funcionar.", err))
 			return
 		}
 		next()
-		want := a.Docker.ImageEnv(ctx, u.Image, "NEXTCLOUD_VERSION")
+		want := a.Docker.ImageEnv(ctx, img, "NEXTCLOUD_VERSION")
 		if err := a.waitNextcloudUpgrade(ctx, name, want, func(m string) { j.set(func(j *Job) { j.Message = m }) }); err != nil {
 			e := fmt.Errorf("La actualización no terminó bien (%v). Para proteger los datos, Nextcloud se queda en modo de mantenimiento. La copia de la base de datos está en %s. Revisa qué pasó con: docker logs %s", err, backup, name)
 			a.setUpdate(name, func(x *Update) { s := e.Error(); x.State, x.Error, x.PreviousImageID = "updated", &s, &oldImg })
@@ -261,7 +301,9 @@ func (a *App) ApplyUpdate(user, name string) (*Job, error) {
 			return
 		}
 		st, _ := a.ncStatus(ctx, name)
-		a.setUpdate(name, func(x *Update) { x.State, x.PreviousImageID, x.CheckedAt = "updated", &oldImg, time.Now() })
+		a.setUpdate(name, func(x *Update) {
+			x.State, x.PreviousImageID, x.CheckedAt, x.Image, x.NextMajor = "updated", &oldImg, time.Now(), img, ""
+		})
 		a.Log(user, name, "Actualización", nil, "Nextcloud "+st.VersionString+". Copia previa: "+backup)
 		a.Refresh("docker")
 		a.Refresh("slow")
@@ -408,4 +450,21 @@ func (a *App) RevertUpdate(user, name string) (*Job, error) {
 		j.finish(name+" vuelve a usar la versión anterior.", nil)
 	}()
 	return j, nil
+}
+
+var reMajorTag = regexp.MustCompile(`^(\d+)(?:\.\d+)*(-[a-z][a-z0-9.-]*)?$`)
+
+// nextMajorRef: nextcloud:30-apache → nextcloud:31-apache. Las etiquetas
+// móviles (latest, stable, apache…) ya reciben las versiones mayores solas.
+func nextMajorRef(ref string) (string, bool) {
+	repo, tag := splitRef(ref)
+	m := reMajorTag.FindStringSubmatch(tag)
+	if m == nil {
+		return "", false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil || n < 1 {
+		return "", false
+	}
+	return fmt.Sprintf("%s:%d%s", repo, n+1, m[2]), true
 }

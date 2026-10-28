@@ -5,6 +5,8 @@
 //	umbral usuario borrar <nombre>        elimina un usuario y cierra sus sesiones
 //	umbral usuario lista                  muestra los usuarios
 //	umbral usuario quitar-2fa <nombre>    quita el doble factor (si se perdió el móvil)
+//	umbral sistema                        tareas de root: salud de discos y lista de paquetes
+//	                                      (lo lanza systemd con umbral-sistema.service)
 //
 // Opción común: -datos /var/lib/umbral (carpeta de configuración y estado).
 package main
@@ -30,7 +32,6 @@ import (
 
 //go:embed all:web/dist
 var webFS embed.FS
-
 
 func main() {
 	fl := flag.NewFlagSet("umbral", flag.ExitOnError)
@@ -58,6 +59,11 @@ func main() {
 		serve(*dataDir)
 	case "usuario":
 		if err := users(*dataDir, rest); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+	case "sistema":
+		if err := core.RunSystemHelper(core.HelperDir); err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			os.Exit(1)
 		}
@@ -97,6 +103,7 @@ func serve(dataDir string) {
 		log.Fatal(err)
 	}
 	app.Hist.Save()
+	app.Avail.Save()
 }
 
 func users(dataDir string, args []string) error {

@@ -1,0 +1,44 @@
+# Comprueba cada cambio: tipos y compilación del panel, y vet, pruebas y
+# compilación del servicio para amd64 y arm64.
+name: Pruebas
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pruebas:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Panel
+        run: |
+          npm ci
+          npm run build
+          if grep -rqE "tail3f2a1|JBSWY3DPEHPK3PXP" server/web/dist; then
+            echo "El servidor simulado de desarrollo se ha colado en la compilación." && exit 1
+          fi
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.mod
+
+      - name: Servicio
+        working-directory: server
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; echo "Formatea el código con gofmt -w ."; exit 1; }
+          go vet ./...
+          go test ./...
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null .
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o /dev/null .

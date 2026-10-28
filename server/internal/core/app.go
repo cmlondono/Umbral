@@ -7,6 +7,7 @@ import (
 	"net"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,13 +18,18 @@ import (
 // salvo las lecturas de CPU de los contenedores, que solo se hacen mientras
 // alguien está mirando.
 type App struct {
-	DataDir string
-	Cfg     *ConfigStore
-	Auth    *Auth
-	Docker  *Docker
-	Hist    *MetricsHistory
-	Net     *Scanner
-	Engine  *Engine
+	DataDir   string
+	Cfg       *ConfigStore
+	Auth      *Auth
+	Docker    *Docker
+	Hist      *MetricsHistory
+	Net       *Scanner
+	Engine    *Engine
+	Notify    *Notifier
+	AccessLog *AccessLog
+	Avail     *Avail
+	Sys       *sysMon
+	Router    *Router
 
 	mu        sync.RWMutex
 	server    ServerInfo
@@ -43,6 +49,7 @@ type App struct {
 	wakeAt     time.Time
 	histFile   jsonFile[[]HistoryItem]
 	updFile    jsonFile[UpdatesState]
+	ncFiles    jsonFile[[]FileSnapshot]
 	kick       chan string
 	sampler    Sampler
 	sampMu     sync.Mutex
@@ -82,12 +89,15 @@ func NewApp(dataDir string) (*App, error) {
 		Net: NewScanner(filepath.Join(dataDir, "network.json"), dataDir), kick: make(chan string, 8)}
 	a.histFile.path = filepath.Join(dataDir, "history.json")
 	a.updFile.path = filepath.Join(dataDir, "updates.json")
+	a.ncFiles.path = filepath.Join(dataDir, "ncfiles.json")
 	_ = a.histFile.Load(&a.history)
 	_ = a.updFile.Load(&a.updates)
 	a.updates.Checking = false
 	if a.updates.Items == nil {
 		a.updates.Items = []Update{}
 	}
+	a.Notify, a.AccessLog, a.Avail, a.Sys = newNotifier(dataDir), newAccessLog(dataDir), newAvail(dataDir), newSysMon(dataDir)
+	a.Router = newRouter(dataDir)
 	a.Engine = newEngine(a, dataDir)
 	a.Engine.migrateOld(dataDir)
 	a.server = ReadServerInfo()
@@ -130,23 +140,28 @@ func (a *App) Run(ctx context.Context) {
 	a.sampleNow()
 	a.refreshDocker(ctx, true)
 	go a.refreshSlow()
+	go a.Sys.Refresh(false)
 
 	for {
 		select {
 		case <-ctx.Done():
 			a.Hist.Save()
+			a.Avail.Save()
 			return
 		case <-tMetrics.C:
 			a.sampleNow()
 			a.Engine.Evaluate()
 		case <-tDocker.C:
 			a.refreshDocker(ctx, a.watching())
+			a.recordAvail()
 		case <-tSlow.C:
 			go a.refreshSlow()
+			go a.Sys.Refresh(false)
 		case <-tAuto.C:
 			a.refreshPC()
 		case <-tSave.C:
 			a.Hist.Save()
+			a.Avail.Save()
 		case <-tScan.C:
 			go func() {
 				if err := a.Net.Scan(a.Cfg.Get()); err != nil {
@@ -351,6 +366,9 @@ func (a *App) refreshSlow() {
 	a.mu.Lock()
 	a.tailscale, a.nextcloud, a.internet = ts, nc, &inet
 	a.mu.Unlock()
+	a.Router.Refresh(cfg.Router)
+	rs := a.Router.State()
+	a.Net.SetRouter(cfg, a.Router.Names(), rs.Blocked)
 }
 
 func (a *App) refreshPC() {
@@ -447,6 +465,11 @@ type Snapshot struct {
 	Jobs        []JobView      `json:"jobs"`
 	Internet    *bool          `json:"internet"`
 	Panel       PanelInfo      `json:"panel"`
+	Notify      NotifyView     `json:"notify"`
+	Avail       []AvailView    `json:"avail"`
+	Incidents   []Incident     `json:"incidents"`
+	System      SystemState    `json:"system"`
+	Router      RouterState    `json:"router"`
 }
 
 func (a *App) Snapshot() Snapshot {
@@ -455,11 +478,16 @@ func (a *App) Snapshot() Snapshot {
 		netst.Devices = []NetDevice{}
 	}
 	rules, runs := a.Engine.Views()
+	av, inc := a.Avail.Views(time.Now())
+	nv := a.Notify.View()
+	sys := a.Sys.State()
+	rt := a.Router.State()
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	s := Snapshot{At: time.Now(), Server: a.server, Metrics: a.metrics, MetricsErr: a.metricErr, Docker: a.docker, Nextcloud: a.nextcloud,
-		PC: a.pc, Tailscale: a.tailscale, Network: netst, Updates: a.updates, Config: a.Cfg.Public(), Jobs: []JobView{}, Automations: rules, Runs: runs, Internet: a.internet, Panel: panelInfo(a.started, a.DataDir)}
+		PC: a.pc, Tailscale: a.tailscale, Network: netst, Updates: a.updates, Config: a.Cfg.Public(), Jobs: []JobView{}, Automations: rules, Runs: runs, Internet: a.internet, Panel: panelInfo(a.started, a.DataDir, a.Cfg.Get().Listen)}
 	s.History = append([]HistoryItem{}, a.history...)
+	s.Notify, s.Avail, s.Incidents, s.System, s.Router = nv, av, inc, sys, rt
 	for _, j := range a.jobs {
 		s.Jobs = append(s.Jobs, j.copy())
 	}
@@ -504,12 +532,20 @@ type PanelInfo struct {
 	MemMB     int    `json:"memMB"`
 	UptimeSec int64  `json:"uptimeSec"`
 	DataDir   string `json:"dataDir"`
+	Port      int    `json:"port"` // puerto local del panel (para publicarlo en Tailscale)
 }
 
-var Version = "0.1.0"
+// Version la fija la compilación de las versiones publicadas (-ldflags "-X ...core.Version=v1.2.3").
+var Version = "1.2.0"
 
-func panelInfo(started time.Time, dataDir string) PanelInfo {
+func panelInfo(started time.Time, dataDir, listen string) PanelInfo {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
-	return PanelInfo{Version: Version, MemMB: int(m.Sys >> 20), UptimeSec: int64(time.Since(started).Seconds()), DataDir: dataDir}
+	return PanelInfo{Version: Version, MemMB: int(m.Sys >> 20), UptimeSec: int64(time.Since(started).Seconds()), DataDir: dataDir, Port: listenPort(listen)}
+}
+
+func listenPort(listen string) int {
+	_, p, _ := net.SplitHostPort(listen)
+	n, _ := strconv.Atoi(p)
+	return n
 }

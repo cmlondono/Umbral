@@ -6,8 +6,11 @@ import { Badge, Icon, Panel, Seg, dur, st, type StateInfo } from '../../design/u
 import { usePaged } from '../../design/Pager';
 import { toolObj } from '../../state/actions';
 import { DobleFactor } from './DobleFactor';
+import { Avisos } from './Avisos';
+import { Accesos } from './Accesos';
+import { RouterSettings } from './RouterConfig';
 
-const TABS: [SetTab, string][] = [['ui', 'Interfaz'], ['devices', 'Dispositivos registrados'], ['integrations', 'Integraciones'], ['security', 'Seguridad y acceso'], ['pending', 'Configuración pendiente'], ['about', 'Información del sistema']];
+const TABS: [SetTab, string][] = [['ui', 'Interfaz'], ['devices', 'Dispositivos registrados'], ['integrations', 'Integraciones'], ['notify', 'Avisos'], ['security', 'Seguridad y acceso'], ['pending', 'Configuración pendiente'], ['about', 'Información del sistema']];
 
 export function Ajustes({ d }: { d: Derived }) {
   const s = useStore();
@@ -26,6 +29,7 @@ export function Ajustes({ d }: { d: Derived }) {
         {s.setTab === 'ui' && <Interfaz />}
         {s.setTab === 'devices' && <Equipos d={d} />}
         {s.setTab === 'integrations' && <Integraciones d={d} />}
+        {s.setTab === 'notify' && <Avisos d={d} />}
         {s.setTab === 'security' && <Seguridad d={d} />}
         {s.setTab === 'pending' && (
           <Panel title="Configuración pendiente" hint={left + ' de ' + pend.length + ' pendientes'}>
@@ -72,6 +76,9 @@ function Interfaz() {
       {row('transparency', 'Transparencia', 'Reducida sustituye el cristal por superficies opacas: más contraste y menos consumo gráfico.', [['normal', 'Cristal'], ['reduced', 'Reducida']])}
       {row('density', 'Densidad', 'La vista compacta muestra más filas en tablas y listas.', [['comfortable', 'Cómoda'], ['compact', 'Compacta']])}
       {row('autoRefresh', 'Actualización automática', 'Cada cuánto se piden datos nuevos al servidor. Intervalos largos consumen menos recursos.', [['off', 'Manual'], ['30s', '30 s'], ['1m', '1 min'], ['5m', '5 min']])}
+      <div className="setrow"><div className="grow"><span className="strong">Usarlo como app en el móvil</span>
+        <span className="sub">En el iPhone, abre el panel en Safari y pulsa Compartir › «Añadir a pantalla de inicio». En Android, menú de Chrome › «Instalar aplicación». Se abre a pantalla completa, con su icono y sin la barra del navegador. La primera vez tendrás que iniciar sesión dentro de la app.</span></div>
+        <Badge s={window.matchMedia('(display-mode: standalone)').matches ? st('ok', 'Abierto como app') : st('noCheck', 'En el navegador')} /></div>
     </Panel>
   );
 }
@@ -158,10 +165,13 @@ function Integraciones({ d }: { d: Derived }) {
   const x = d.s;
   const rows: { name: string; purpose: string; badge: StateInfo; need: string }[] = [
     { name: 'Docker', purpose: 'Contenedores, imágenes, despliegues y actualizaciones', badge: x.docker.available ? st('connected') : st('err', 'Sin respuesta'), need: x.docker.available ? 'Versión ' + x.docker.version + '.' : x.docker.error || 'Añade el usuario umbral al grupo docker.' },
-    { name: 'Métricas del sistema', purpose: 'CPU, memoria, discos y red, leídas de /proc', badge: x.metrics ? st('connected') : st('err', 'Sin datos'), need: x.metrics ? 'Sin agentes extra. Puedes retirar Netdata.' : x.metricsError || '' },
+    { name: 'Métricas del sistema', purpose: 'CPU, memoria, discos y red, leídas de /proc', badge: x.metrics ? st('connected') : st('err', 'Sin datos'), need: x.metrics ? 'Sin agentes extra: el propio servicio las lee cada 15 s.' : x.metricsError || '' },
     { name: 'Wake-on-LAN', purpose: 'Encender el PC', badge: x.pc.configured ? st('ok', 'Configurado') : st('pending'), need: x.pc.configured ? 'Activa también Wake-on-LAN en la BIOS y en la tarjeta de red del PC.' : 'Añade la IP y la MAC del PC en Dispositivos registrados.' },
     { name: 'Nextcloud', purpose: 'Estado funcional de la aplicación', badge: !x.nextcloud.configured ? st('pending') : x.nextcloud.reachable ? st('connected') : st('err', 'Sin respuesta'), need: x.nextcloud.configured ? 'Se consulta ' + x.nextcloud.url + '/status.php cada minuto.' : 'Indica abajo su dirección, o publica su puerto para detectarla sola.' },
     { name: 'Tailscale', purpose: 'Acceso desde fuera de casa', badge: x.tailscale.running ? st('connected') : x.tailscale.installed ? st('err', 'Desconectado') : st('notConfigured', 'No instalado'), need: x.tailscale.running ? 'Para publicar servicios con HTTPS: sudo tailscale set --operator=umbral.' : 'Ejecuta tailscale up en el servidor.' },
+    { name: 'Router', purpose: 'Nombres DHCP, bloquear Internet a un equipo y reiniciarlo', badge: !x.router.configured ? st('notConfigured', 'Sin integración') : x.router.connected ? st('connected') : st('err', 'Sin respuesta'), need: !x.router.configured ? 'Solo con routers que tienen API: OpenWrt o MikroTik. Configúralo abajo.' : x.router.connected ? (x.router.info?.model || '') + ' · ' + (x.router.info?.firmware || '') : x.router.error },
+    { name: 'Avisos al móvil', purpose: 'Acción «Avisar al móvil» de las automatizaciones', badge: x.notify.configured ? st('ok', 'Configurados') : st('notConfigured', 'Sin configurar'), need: x.notify.configured ? 'ntfy, tema ' + x.notify.topic + '.' : 'Configúralos en Ajustes › Avisos.' },
+    { name: 'Ayudante de sistema', purpose: 'Salud de los discos y lista de paquetes de Debian', badge: x.system.helperInstalled ? st('ok', 'Instalado') : st('notConfigured', 'No instalado'), need: x.system.helperInstalled ? (x.system.smart?.available ? 'Lee SMART y la lista de paquetes cada 6 h.' : 'Para la salud de los discos: sudo apt install smartmontools.') : 'Vuelve a ejecutar instalar.sh con esta versión.' },
     { name: 'Escaneo de red', purpose: 'Dispositivos detectados', badge: x.network.lastScan ? st('connected') : st('pending'), need: 'Tabla ARP del servidor, cada ' + x.config.scanMinutes + ' min.' },
     { name: 'Escritorio remoto', purpose: 'Abrir la herramienta elegida', badge: tool ? st('ok', tool.label.replace(' (RDP)', '')) : st('pending'), need: tool ? 'Instálala en el PC y en tus dispositivos.' : 'Elige la herramienta en Acceso remoto.' },
   ];
@@ -186,6 +196,7 @@ function Integraciones({ d }: { d: Derived }) {
         </div>
         <SaveBar form={form} d={d} />
       </Panel>
+      <RouterSettings d={d} />
     </>
   );
 }
@@ -211,6 +222,7 @@ function Seguridad({ d }: { d: Derived }) {
         </div>
       ))}
     </Panel>
+    <Accesos />
     </>
   );
 }

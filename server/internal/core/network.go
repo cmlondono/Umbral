@@ -120,6 +120,7 @@ type NetDevice struct {
 	FirstSeen  time.Time `json:"firstSeen"`
 	LastSeen   time.Time `json:"lastSeen"`
 	Registered *string   `json:"registered"`
+	Blocked    bool      `json:"blocked"` // sin Internet por una regla del router
 }
 
 type NetworkState struct {
@@ -136,6 +137,9 @@ type Scanner struct {
 	state NetworkState
 	file  jsonFile[map[string]*NetDevice]
 	oui   *ouiDB
+	// Del router (si tiene integración): nombres DHCP y equipos bloqueados.
+	routerNames map[string]string
+	blocked     map[string]bool
 }
 
 func NewScanner(path, dataDir string) *Scanner {
@@ -277,6 +281,10 @@ func (s *Scanner) rebuildLocked(cfg Config, present map[string]arpEntry) {
 				c.Name = cfg.PC.Name
 			}
 		}
+		if c.Name == "" && s.routerNames[mac] != "" {
+			c.Name = s.routerNames[mac]
+		}
+		c.Blocked = s.blocked[mac]
 		if isRandomMAC(mac) && c.Vendor == "" {
 			c.Vendor = "MAC privada (aleatoria)"
 		}
@@ -284,6 +292,23 @@ func (s *Scanner) rebuildLocked(cfg Config, present map[string]arpEntry) {
 	}
 	sort.Slice(devs, func(i, j int) bool { return ipLess(devs[i].IP, devs[j].IP) })
 	s.state.Devices = devs
+}
+
+// SetRouter recibe del router los nombres DHCP y los equipos bloqueados.
+func (s *Scanner) SetRouter(cfg Config, names map[string]string, blocked []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.routerNames, s.blocked = names, map[string]bool{}
+	for _, m := range blocked {
+		s.blocked[strings.ToUpper(m)] = true
+	}
+	present := map[string]arpEntry{}
+	for _, x := range s.state.Devices {
+		if x.Online {
+			present[x.MAC] = arpEntry{}
+		}
+	}
+	s.rebuildLocked(cfg, present)
 }
 
 // UpdateDevice guarda el nombre que el usuario pone a un dispositivo (vacío
@@ -387,10 +412,11 @@ type TailscaleState struct {
 	Error     *string         `json:"error"`
 	Self      *TailscaleSelf  `json:"self"`
 	Peers     []TailscalePeer `json:"peers"`
+	Serve     []ServeEntry    `json:"serve"`
 }
 
 func ReadTailscale() TailscaleState {
-	st := TailscaleState{Peers: []TailscalePeer{}}
+	st := TailscaleState{Peers: []TailscalePeer{}, Serve: []ServeEntry{}}
 	path, err := exec.LookPath("tailscale")
 	if err != nil {
 		return st
@@ -404,7 +430,11 @@ func ReadTailscale() TailscaleState {
 		st.Error = &e
 		return st
 	}
-	return parseTailscale(out, st)
+	st = parseTailscale(out, st)
+	if st.Running {
+		st.Serve, _ = readServe(path)
+	}
+	return st
 }
 
 func parseTailscale(out []byte, st TailscaleState) TailscaleState {

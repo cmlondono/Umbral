@@ -1,14 +1,17 @@
-import { useEffect, useRef } from 'react';
+import { useDialog } from '../design/useDialog';
 import type { Derived } from '../state/derive';
 import { dismiss, get, nav, set, useStore } from '../state/store';
 import { ActButton, Badge, Icon, Sym, act, agoIso, dur, fmt, memLabel, st, type Action, type IconName, type StateInfo } from '../design/ui';
 import { backupDb, copySsh, ctrAction, imgRef, openUrl, pcActions, removeImages, startPull } from '../state/actions';
 import { Wizard, openWizardForImage } from '../features/servicios/Wizard';
+import { ContainerExtra, LogsModal } from '../features/servicios/ContainerExtra';
+import { pctLabel } from '../features/servicios/Disponibilidad';
 
 interface DrawerView {
   icon: IconName; title: string; subtitle: string; badge: StateInfo; second?: StateInfo; note?: string;
   facts: { k: string; v: string }[];
   groups: { title: string; desc: string; actions: Action[] }[];
+  extra?: React.ReactNode;
 }
 
 function deviceDrawer(id: string, d: Derived): DrawerView {
@@ -77,8 +80,10 @@ function serviceDrawer(name: string, d: Derived): DrawerView | null {
       { k: 'Imagen', v: c.image }, { k: 'Puertos publicados', v: c.ports.length ? c.ports.join(', ') : 'Ninguno (solo red interna de Docker)' },
       { k: 'Consumo', v: c.state === 'running' && c.cpuPct != null ? fmt(c.cpuPct) + ' % de CPU · ' + c.memMB + ' MB de memoria' : c.state === 'running' ? 'Se mide mientras el panel está abierto' : 'Sin datos' },
       { k: 'Dirección', v: c.url || 'Sin puerto publicado' },
+      ...(() => { const a = d.s.avail?.find((x) => x.target === c.name); return a ? [{ k: 'Disponibilidad', v: pctLabel(a.pct24h) + ' en 24 h · ' + pctLabel(a.pct7d) + ' en 7 días' }] : []; })(),
     ],
-    groups: [{ title: 'Acciones', desc: 'Reiniciar, detener y eliminar piden confirmación.', actions: acts }] };
+    groups: [{ title: 'Acciones', desc: 'Reiniciar, detener y eliminar piden confirmación.', actions: acts }],
+    extra: d.srvOn && d.s.docker.available ? <ContainerExtra key={c.name} name={c.name} memMB={c.state === 'running' ? c.memMB : null} blocked={off} /> : undefined };
 }
 
 function imageDrawer(id: string, d: Derived): DrawerView {
@@ -106,34 +111,11 @@ export function imgBadge(im: { repo: string; usedBy: string[] }, d: Derived): St
   return running ? st('ok', 'En uso') : st('off', 'En uso, detenida');
 }
 
-/* Bloquea el foco dentro de un diálogo y lo devuelve al cerrarlo. */
-function useDialog(open: boolean, onClose?: () => void) {
-  const ref = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!open) return;
-    const prev = document.activeElement as HTMLElement | null;
-    const el = ref.current;
-    const first = el?.querySelector<HTMLElement>('input, textarea, button.btn-primary, button:not([disabled])');
-    first?.focus();
-    const key = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && onClose) { e.stopPropagation(); onClose(); }
-      if (e.key !== 'Tab' || !el) return;
-      const f = Array.from(el.querySelectorAll<HTMLElement>('button:not([disabled]), input, textarea, select, summary, [href]'));
-      if (!f.length) return;
-      if (e.shiftKey && document.activeElement === f[0]) { e.preventDefault(); f[f.length - 1].focus(); }
-      else if (!e.shiftKey && document.activeElement === f[f.length - 1]) { e.preventDefault(); f[0].focus(); }
-    };
-    document.addEventListener('keydown', key);
-    return () => { document.removeEventListener('keydown', key); prev?.focus?.(); };
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
-  return ref;
-}
-
 export function Layers({ d }: { d: Derived | null }) {
   const s = useStore();
   const drawer = d && s.drawer ? (s.drawer.type === 'device' ? deviceDrawer(s.drawer.id, d) : s.drawer.type === 'image' ? imageDrawer(s.drawer.id, d) : serviceDrawer(s.drawer.id, d)) : null;
   const closeDrawer = () => set({ drawer: null });
-  const drawerRef = useDialog(!!drawer && !s.modal, closeDrawer);
+  const drawerRef = useDialog(!!drawer && !s.modal && !s.logs, closeDrawer);
   const modalRef = useDialog(!!s.modal, () => set({ modal: null }));
 
   return (
@@ -168,12 +150,14 @@ export function Layers({ d }: { d: Derived | null }) {
                 </div>
               </div>
             ))}
+            {drawer.extra}
             <div style={{ height: 20 }} />
           </aside>
         </>
       )}
 
       {s.pull && <PullModal />}
+      {s.logs && <LogsModal name={s.logs} />}
       {s.wiz && d && <Wizard d={d} />}
 
       {s.modal && (

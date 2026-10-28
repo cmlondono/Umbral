@@ -137,6 +137,9 @@ func (d *Docker) Containers(ctx context.Context) ([]Container, error) {
 	}
 	out := make([]Container, 0, len(raw))
 	for _, r := range raw {
+		if r.Labels["umbral.temporal"] != "" {
+			continue // contenedores de un solo uso de Umbral (por ejemplo, la copia de Nextcloud)
+		}
 		c := Container{ID: r.ID, Image: r.Image, ImageID: r.ImageID, Status: r.Status, Ports: []string{}, labels: r.Labels, Health: "none"}
 		if len(r.Names) > 0 {
 			c.Name = strings.TrimPrefix(r.Names[0], "/")

@@ -18,7 +18,8 @@ CPUQuota=50%
 Nice=5
 
 # Endurecimiento: sin privilegios, sistema de archivos de solo lectura salvo
-# sus carpetas de datos.
+# sus carpetas de datos y, para copiar las copias de seguridad a un disco
+# externo, /media y /mnt (solo donde el usuario umbral tenga permiso).
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -29,7 +30,7 @@ ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
-ReadWritePaths=/var/lib/umbral /srv/umbral
+ReadWritePaths=/var/lib/umbral /srv/umbral -/media -/mnt
 StateDirectory=umbral
 StateDirectoryMode=0700
 

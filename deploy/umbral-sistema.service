@@ -1,0 +1,21 @@
+[Unit]
+Description=Umbral: tareas de sistema (salud de los discos y lista de paquetes)
+After=network-online.target
+Wants=network-online.target
+
+# Corre como root porque smartctl y apt-get update lo necesitan. No recibe
+# datos del panel: siempre hace lo mismo y escribe sus resultados en
+# /var/lib/umbral-helper, que Umbral solo puede leer.
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/umbral sistema
+StateDirectory=umbral-helper
+StateDirectoryMode=0755
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=15min
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes

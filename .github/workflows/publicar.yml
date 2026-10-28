@@ -1,0 +1,62 @@
+# Al subir una etiqueta de versión (git tag v1.2.0 && git push origin v1.2.0)
+# compila Umbral para amd64 y arm64 y publica una versión en GitHub con un
+# paquete listo para instalar: se descomprime y se ejecuta sudo sh instalar.sh.
+name: Publicar versión
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Panel
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.mod
+
+      - name: Pruebas
+        working-directory: server
+        run: |
+          go vet ./...
+          go test ./...
+
+      - name: Compilar y empaquetar
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p paquetes
+          for ARCH in amd64 arm64; do
+            DIR="umbral-$VERSION-linux-$ARCH"
+            mkdir -p "$DIR"
+            (cd server && GOOS=linux GOARCH=$ARCH CGO_ENABLED=0 go build -trimpath \
+              -ldflags "-s -w -X umbral/server/internal/core.Version=$VERSION" \
+              -o "../$DIR/umbral-linux-$ARCH" .)
+            cp deploy/instalar.sh deploy/umbral.service deploy/umbral-sistema.service \
+               deploy/umbral-sistema.timer deploy/umbral-sistema.path LICENSE "$DIR/"
+            tar -czf "paquetes/$DIR.tar.gz" "$DIR"
+          done
+          (cd paquetes && sha256sum *.tar.gz > SHA256SUMS)
+
+      - name: Publicar en GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" paquetes/* \
+            --title "Umbral ${GITHUB_REF_NAME#v}" \
+            --generate-notes

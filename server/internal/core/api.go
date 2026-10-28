@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -40,12 +41,24 @@ func readJSON(r *http.Request, v any) error {
 	return nil
 }
 
+// clientIP es la IP de quien hace la petición. Si llega desde el propio
+// servidor con X-Forwarded-For, es «tailscale serve» haciendo de proxy: la IP
+// real es la última de la cabecera (la que añade el proxy, no el cliente).
 func clientIP(r *http.Request) net.IP {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	return net.ParseIP(host)
+	ip := net.ParseIP(host)
+	if ip != nil && ip.IsLoopback() {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			if p := net.ParseIP(strings.TrimSpace(parts[len(parts)-1])); p != nil {
+				return p
+			}
+		}
+	}
+	return ip
 }
 
 // Handler monta la API y sirve el panel compilado.
@@ -60,6 +73,9 @@ func (a *App) Handler(web fs.FS) http.Handler {
 	open("POST /api/auth/login", a.login)
 	open("POST /api/auth/logout", func(w http.ResponseWriter, r *http.Request) {
 		if c, err := r.Cookie(cookieName); err == nil {
+			if u, ok := a.Auth.Check(c.Value); ok {
+				a.Access(r, u, "logout")
+			}
 			a.Auth.Logout(c.Value)
 		}
 		http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
@@ -90,6 +106,7 @@ func (a *App) Handler(web fs.FS) http.Handler {
 			return
 		}
 		a.Log(user, "Inicio de sesión", "Cambio de contraseña", nil, "Se cerraron las demás sesiones")
+		a.Access(r, user, "password")
 		// Cambiar la contraseña cierra todas las sesiones; se abre una nueva aquí.
 		token, ttl := a.Auth.NewSession(user, true)
 		http.SetCookie(w, &http.Cookie{Name: cookieName, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: int(ttl.Seconds()), Secure: r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"})
@@ -115,6 +132,7 @@ func (a *App) Handler(web fs.FS) http.Handler {
 			fail(w, 400, err.Error())
 			return
 		}
+		a.Access(r, userOf(r), "totp-on")
 		// Activarlo cierra las demás sesiones; esta sigue abierta.
 		token, ttl := a.Auth.NewSession(userOf(r), true)
 		http.SetCookie(w, &http.Cookie{Name: cookieName, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: int(ttl.Seconds()), Secure: r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"})
@@ -129,6 +147,7 @@ func (a *App) Handler(web fs.FS) http.Handler {
 			fail(w, 400, err.Error())
 			return
 		}
+		a.Access(r, userOf(r), "totp-off")
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	})
 	auth("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
@@ -230,6 +249,275 @@ func (a *App) Handler(web fs.FS) http.Handler {
 		writeJSON(w, 200, map[string]any{"path": path, "sizeKB": size / 1024, "database": db})
 	})
 
+	auth("GET /api/containers/{name}/logs", func(w http.ResponseWriter, r *http.Request) {
+		tail := 200
+		switch r.URL.Query().Get("lineas") {
+		case "500":
+			tail = 500
+		case "2000":
+			tail = 2000
+		}
+		lines, err := a.Docker.Logs(r.Context(), r.PathValue("name"), tail)
+		if err != nil {
+			fail(w, 502, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]any{"lines": lines, "at": time.Now()})
+	})
+	auth("GET /api/containers/{name}/details", func(w http.ResponseWriter, r *http.Request) {
+		det, err := a.Docker.Details(r.Context(), r.PathValue("name"))
+		if err != nil {
+			fail(w, 404, err.Error())
+			return
+		}
+		writeJSON(w, 200, det)
+	})
+	auth("POST /api/containers/{name}/memory", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			MB      int  `json:"mb"`
+			Confirm bool `json:"confirm"`
+		}
+		if readJSON(r, &body) != nil || !body.Confirm {
+			fail(w, 400, "Esta acción necesita confirmación.")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+		defer cancel()
+		if err := a.SetMemory(ctx, userOf(r), r.PathValue("name"), body.MB); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		a.refreshDocker(r.Context(), true)
+		writeJSON(w, 200, a.Snapshot())
+	})
+
+	/* Router */
+	type routerBody struct {
+		RouterConfig
+		Password *string `json:"password"`
+	}
+	auth("POST /api/router/test", func(w http.ResponseWriter, r *http.Request) {
+		var b routerBody
+		if err := readJSON(r, &b); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		if err := ValidRouter(b.RouterConfig); err != nil || b.Kind == "" {
+			fail(w, 400, "Completa el tipo, la dirección y el usuario del router.")
+			return
+		}
+		info, err := a.Router.Test(b.RouterConfig, b.Password)
+		if err != nil {
+			fail(w, 502, err.Error())
+			return
+		}
+		writeJSON(w, 200, info)
+	})
+	auth("PUT /api/router", func(w http.ResponseWriter, r *http.Request) {
+		var b routerBody
+		if err := readJSON(r, &b); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		p := a.Cfg.Public()
+		p.Router = b.RouterConfig
+		if b.Kind == "" {
+			p.Router = RouterConfig{}
+			empty := ""
+			b.Password = &empty
+		}
+		if err := a.Cfg.Update(p); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		if err := a.Router.SetPassword(b.Password); err != nil {
+			fail(w, 500, "No se pudo guardar la contraseña: "+err.Error())
+			return
+		}
+		a.Log(userOf(r), "Router", map[bool]string{true: "Integración guardada", false: "Integración quitada"}[b.Kind != ""], nil, RouterKinds[b.Kind])
+		a.refreshSlow()
+		writeJSON(w, 200, a.Snapshot())
+	})
+	auth("POST /api/router/{op}", func(w http.ResponseWriter, r *http.Request) {
+		var b struct {
+			MAC     string `json:"mac"`
+			Confirm bool   `json:"confirm"`
+		}
+		_ = readJSON(r, &b)
+		op := r.PathValue("op")
+		if (op == "block" || op == "reboot") && !b.Confirm {
+			fail(w, 400, "Esta acción necesita confirmación.")
+			return
+		}
+		err := a.Router.Do(a.Cfg.Get().Router, op, b.MAC)
+		target := b.MAC
+		if op == "reboot" {
+			target = "Router"
+		}
+		a.Log(userOf(r), target, map[string]string{"block": "Internet bloqueado", "unblock": "Internet desbloqueado", "reboot": "Reinicio del router"}[op], err, "")
+		if err != nil {
+			fail(w, 502, err.Error())
+			return
+		}
+		rs := a.Router.State()
+		a.Net.SetRouter(a.Cfg.Get(), a.Router.Names(), rs.Blocked)
+		writeJSON(w, 200, a.Snapshot())
+	})
+
+	/* Publicar en Tailscale con HTTPS */
+	auth("POST /api/tailscale/serve", func(w http.ResponseWriter, r *http.Request) {
+		var b struct {
+			Port  int    `json:"port"`
+			Local int    `json:"local"`
+			Label string `json:"label"`
+		}
+		if err := readJSON(r, &b); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		if err := a.Publish(userOf(r), b.Port, b.Local, b.Label); err != nil {
+			fail(w, 502, err.Error())
+			return
+		}
+		a.refreshSlow()
+		writeJSON(w, 200, a.Snapshot())
+	})
+	auth("POST /api/tailscale/serve/{port}/off", func(w http.ResponseWriter, r *http.Request) {
+		var b struct {
+			Confirm bool   `json:"confirm"`
+			Label   string `json:"label"`
+		}
+		if readJSON(r, &b) != nil || !b.Confirm {
+			fail(w, 400, "Esta acción necesita confirmación.")
+			return
+		}
+		port, _ := strconv.Atoi(r.PathValue("port"))
+		if err := a.Unpublish(userOf(r), port, b.Label); err != nil {
+			fail(w, 502, err.Error())
+			return
+		}
+		a.refreshSlow()
+		writeJSON(w, 200, a.Snapshot())
+	})
+
+	/* Sistema: actualizaciones de Debian y salud de los discos */
+	auth("POST /api/system/check", func(w http.ResponseWriter, r *http.Request) {
+		err := a.Sys.Request()
+		a.Sys.Refresh(true)
+		if err != nil {
+			fail(w, 409, err.Error())
+			return
+		}
+		writeJSON(w, 200, a.Snapshot())
+	})
+
+	/* Copias de seguridad */
+	auth("GET /api/backups", func(w http.ResponseWriter, r *http.Request) {
+		files, dir := a.Backups()
+		writeJSON(w, 200, map[string]any{"files": files, "copyDir": dir, "ncFiles": a.ncFilesLog()})
+	})
+	auth("POST /api/backups/nextcloud", func(w http.ResponseWriter, r *http.Request) {
+		j, err := a.BackupNextcloudFiles(userOf(r))
+		if err != nil {
+			fail(w, 409, err.Error())
+			return
+		}
+		writeJSON(w, 202, j.copy())
+	})
+	auth("GET /api/backups/{name}", func(w http.ResponseWriter, r *http.Request) {
+		p, err := a.BackupPath(r.PathValue("name"))
+		if err != nil {
+			fail(w, 404, err.Error())
+			return
+		}
+		a.Log(userOf(r), "Copias de seguridad", "Descarga de una copia", nil, r.PathValue("name"))
+		w.Header().Set("Content-Type", "application/gzip")
+		w.Header().Set("Content-Disposition", "attachment; filename=\""+r.PathValue("name")+"\"")
+		w.Header().Set("Cache-Control", "no-store")
+		http.ServeFile(w, r, p)
+	})
+	auth("POST /api/backups/copy", func(w http.ResponseWriter, r *http.Request) {
+		n, err := a.CopyBackups(userOf(r))
+		if err != nil {
+			fail(w, 409, err.Error())
+			return
+		}
+		files, dir := a.Backups()
+		writeJSON(w, 200, map[string]any{"copied": n, "files": files, "copyDir": dir, "ncFiles": a.ncFilesLog()})
+	})
+
+	/* Avisos y accesos */
+	auth("GET /api/access", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, a.AccessLog.List()) })
+	auth("PUT /api/notify", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Server string  `json:"server"`
+			Topic  string  `json:"topic"`
+			Token  *string `json:"token"`
+		}
+		if err := readJSON(r, &body); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		if err := a.Notify.Update(body.Server, body.Topic, body.Token); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		a.Log(userOf(r), "Avisos", "Configuración guardada", nil, "")
+		writeJSON(w, 200, a.Snapshot())
+	})
+	auth("GET /api/notify/topic", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]string{"topic": NewTopic()})
+	})
+	auth("POST /api/notify/test", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		err := a.Notify.Send(ctx, "Umbral", "Aviso de prueba desde "+a.Cfg.Get().ServerName+". Si lo ves, los avisos funcionan.", 3, "white_check_mark")
+		if err != nil {
+			fail(w, 502, "No se pudo enviar: "+err.Error()+".")
+			return
+		}
+		writeJSON(w, 200, map[string]bool{"ok": true})
+	})
+
+	/* Espacio de Docker */
+	auth("GET /api/docker/disk", func(w http.ResponseWriter, r *http.Request) {
+		d, err := a.Docker.Disk(r.Context())
+		if err != nil {
+			fail(w, 502, err.Error())
+			return
+		}
+		writeJSON(w, 200, d)
+	})
+	auth("POST /api/docker/build-cache/prune", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Confirm bool }
+		if readJSON(r, &body) != nil || !body.Confirm {
+			fail(w, 400, "Esta acción necesita confirmación.")
+			return
+		}
+		mb, err := a.Docker.PruneBuildCache(r.Context())
+		a.Log(userOf(r), "Docker", "Caché de compilación liberada", err, fmt.Sprintf("%d MB", mb))
+		if err != nil {
+			fail(w, 502, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]int64{"freedMB": mb})
+	})
+	auth("POST /api/docker/volumes/{name}/remove", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Confirm bool }
+		if readJSON(r, &body) != nil || !body.Confirm {
+			fail(w, 400, "Esta acción necesita confirmación.")
+			return
+		}
+		name := r.PathValue("name")
+		err := a.Docker.RemoveVolume(r.Context(), name)
+		a.Log(userOf(r), name, "Volumen eliminado", err, "")
+		if err != nil {
+			fail(w, 409, "No se pudo eliminar el volumen: "+err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]bool{"ok": true})
+	})
+
 	/* Imágenes */
 	auth("POST /api/images/pull", func(w http.ResponseWriter, r *http.Request) {
 		var body struct{ Ref string }
@@ -316,7 +604,9 @@ func (a *App) Handler(web fs.FS) http.Handler {
 		var err error
 		switch r.PathValue("action") {
 		case "apply":
-			j, err = a.ApplyUpdate(userOf(r), r.PathValue("name"))
+			j, err = a.ApplyUpdate(userOf(r), r.PathValue("name"), false)
+		case "major":
+			j, err = a.ApplyUpdate(userOf(r), r.PathValue("name"), true)
 		case "revert":
 			j, err = a.RevertUpdate(userOf(r), r.PathValue("name"))
 		default:
@@ -540,11 +830,13 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	}
 	if errors.Is(err, ErrLocked) {
 		a.Log(user, "Inicio de sesión", "Bloqueo temporal", errors.New("demasiados intentos fallidos"), clientIP(r).String())
+		a.Access(r, user, "locked")
 		fail(w, 429, fmt.Sprintf("Demasiados intentos fallidos. Vuelve a intentarlo en %d min.", int(wait.Minutes())+1))
 		return
 	}
 	if err != nil {
 		log.Printf("inicio de sesión fallido para %q desde %s", user, clientIP(r))
+		a.Access(r, user, "fail")
 		fail(w, 401, err.Error())
 		return
 	}
@@ -553,6 +845,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		c.MaxAge = int(ttl.Seconds())
 	}
 	http.SetCookie(w, c)
+	a.Access(r, user, "login")
 	writeJSON(w, 200, map[string]string{"user": user})
 }
 

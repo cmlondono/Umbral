@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -18,14 +19,17 @@ type Config struct {
 	DockerSocket string   `json:"dockerSocket"`
 	AllowNets    []string `json:"allowNets"`
 
-	ServerName  string       `json:"serverName"`
-	PC          PCConfig     `json:"pc"`
-	Nextcloud   NCConfig     `json:"nextcloud"`
-	RemoteTool  *string      `json:"remoteTool"`
-	SSHUser     string       `json:"sshUser"`
-	DataRoot    string       `json:"dataRoot"`
-	ScanMinutes int          `json:"scanMinutes"`
-	Router      RouterConfig `json:"router"`
+	ServerName    string       `json:"serverName"`
+	PC            PCConfig     `json:"pc"`
+	Nextcloud     NCConfig     `json:"nextcloud"`
+	RemoteTool    *string      `json:"remoteTool"`
+	SSHUser       string       `json:"sshUser"`
+	DataRoot      string       `json:"dataRoot"`
+	ScanMinutes   int          `json:"scanMinutes"`
+	Router        RouterConfig `json:"router"`
+	BackupCopyDir string       `json:"backupCopyDir"`
+	NCBackupKeep  int          `json:"ncBackupKeep"`
+	NCBackupMaint bool         `json:"ncBackupMaint"`
 }
 
 type PCConfig struct {
@@ -41,21 +45,28 @@ type NCConfig struct {
 	Container string `json:"container"`
 }
 
+// RouterConfig: el router con API (OpenWrt o MikroTik). Kind vacío = sin
+// integración. La contraseña no está aquí: va en secrets/router.json.
 type RouterConfig struct {
-	IP    string `json:"ip"`
-	Model string `json:"model"`
+	Kind     string `json:"kind"`
+	URL      string `json:"url"`
+	User     string `json:"user"`
+	Insecure bool   `json:"insecure"`
 }
 
 // PublicConfig es la parte que ve el navegador.
 type PublicConfig struct {
-	ServerName  string       `json:"serverName"`
-	PC          PCConfig     `json:"pc"`
-	Nextcloud   NCConfig     `json:"nextcloud"`
-	RemoteTool  *string      `json:"remoteTool"`
-	SSHUser     string       `json:"sshUser"`
-	DataRoot    string       `json:"dataRoot"`
-	ScanMinutes int          `json:"scanMinutes"`
-	Router      RouterConfig `json:"router"`
+	ServerName    string       `json:"serverName"`
+	PC            PCConfig     `json:"pc"`
+	Nextcloud     NCConfig     `json:"nextcloud"`
+	RemoteTool    *string      `json:"remoteTool"`
+	SSHUser       string       `json:"sshUser"`
+	DataRoot      string       `json:"dataRoot"`
+	ScanMinutes   int          `json:"scanMinutes"`
+	Router        RouterConfig `json:"router"`
+	BackupCopyDir string       `json:"backupCopyDir"`
+	NCBackupKeep  int          `json:"ncBackupKeep"`
+	NCBackupMaint bool         `json:"ncBackupMaint"`
 }
 
 func defaultConfig() Config {
@@ -64,11 +75,12 @@ func defaultConfig() Config {
 		Listen:       ":8420",
 		DockerSocket: "/var/run/docker.sock",
 		// Red local, Tailscale y el propio equipo. Nada más puede abrir el panel.
-		AllowNets:   []string{"127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fd7a:115c:a1e0::/48"},
-		ServerName:  host,
-		PC:          PCConfig{CheckPort: 3389},
-		DataRoot:    "/srv/umbral",
-		ScanMinutes: 5,
+		AllowNets:    []string{"127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fd7a:115c:a1e0::/48"},
+		ServerName:   host,
+		PC:           PCConfig{CheckPort: 3389},
+		DataRoot:     "/srv/umbral",
+		ScanMinutes:  5,
+		NCBackupKeep: 7,
 	}
 }
 
@@ -127,7 +139,7 @@ func (cs *ConfigStore) Get() Config {
 
 func (cs *ConfigStore) Public() PublicConfig {
 	c := cs.Get()
-	return PublicConfig{c.ServerName, c.PC, c.Nextcloud, c.RemoteTool, c.SSHUser, c.DataRoot, c.ScanMinutes, c.Router}
+	return PublicConfig{c.ServerName, c.PC, c.Nextcloud, c.RemoteTool, c.SSHUser, c.DataRoot, c.ScanMinutes, c.Router, c.BackupCopyDir, c.NCBackupKeep, c.NCBackupMaint}
 }
 
 func (cs *ConfigStore) Allowed(ip net.IP) bool {
@@ -148,7 +160,10 @@ func (cs *ConfigStore) Update(p PublicConfig) error {
 			return errors.New("La dirección MAC del PC no es válida. Usa el formato 3C:7C:3F:A1:52:0E.")
 		}
 	}
-	for _, ip := range []string{p.PC.IP, p.PC.Broadcast, p.Router.IP} {
+	if err := ValidRouter(p.Router); err != nil {
+		return err
+	}
+	for _, ip := range []string{p.PC.IP, p.PC.Broadcast} {
 		if ip != "" && net.ParseIP(ip) == nil {
 			return errors.New("La dirección IP " + ip + " no es válida.")
 		}
@@ -169,6 +184,15 @@ func (cs *ConfigStore) Update(p PublicConfig) error {
 	if p.ScanMinutes < 1 || p.ScanMinutes > 60 {
 		return errors.New("El escaneo de red debe hacerse cada 1 a 60 minutos.")
 	}
+	if p.NCBackupKeep == 0 {
+		p.NCBackupKeep = 7
+	}
+	if p.NCBackupKeep < 1 || p.NCBackupKeep > 60 {
+		return errors.New("Se pueden guardar entre 1 y 60 copias de los archivos.")
+	}
+	if err := ValidCopyDir(p.BackupCopyDir); err != nil {
+		return err
+	}
 	if !filepath.IsAbs(p.DataRoot) {
 		return errors.New("La carpeta de datos debe ser una ruta absoluta, como /srv/umbral.")
 	}
@@ -178,6 +202,11 @@ func (cs *ConfigStore) Update(p PublicConfig) error {
 	c.ServerName, c.PC, c.Nextcloud, c.RemoteTool = strings.TrimSpace(p.ServerName), p.PC, p.Nextcloud, p.RemoteTool
 	c.PC.MAC = strings.ToUpper(c.PC.MAC)
 	c.SSHUser, c.DataRoot, c.ScanMinutes, c.Router = p.SSHUser, filepath.Clean(p.DataRoot), p.ScanMinutes, p.Router
+	c.NCBackupKeep, c.NCBackupMaint = p.NCBackupKeep, p.NCBackupMaint
+	c.BackupCopyDir = ""
+	if p.BackupCopyDir != "" {
+		c.BackupCopyDir = path.Clean(p.BackupCopyDir)
+	}
 	return cs.save()
 }
 

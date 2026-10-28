@@ -126,3 +126,20 @@ func readTemp() (*float64, string) {
 	r := round1(best)
 	return &r, label
 }
+
+// sameDevice indica si dos rutas están en el mismo sistema de archivos.
+func sameDevice(a, b string) bool {
+	var sa, sb syscall.Stat_t
+	if syscall.Stat(a, &sa) != nil || syscall.Stat(b, &sb) != nil {
+		return false
+	}
+	return sa.Dev == sb.Dev
+}
+
+func freeGB(p string) int64 {
+	var st syscall.Statfs_t
+	if syscall.Statfs(p, &st) != nil {
+		return -1
+	}
+	return int64(st.Bavail) * int64(st.Bsize) / 1e9
+}

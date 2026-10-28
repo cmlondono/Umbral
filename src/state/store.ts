@@ -3,7 +3,7 @@ import { ApiError, type Adapter } from '../data/adapters';
 import type { CatalogApp, History, Job, LivePoint, Range, Snapshot } from '../data/types';
 
 export type Page = 'home' | 'devices' | 'server' | 'services' | 'network' | 'remote' | 'auto' | 'settings';
-export type SetTab = 'ui' | 'devices' | 'integrations' | 'security' | 'pending' | 'about';
+export type SetTab = 'ui' | 'devices' | 'integrations' | 'notify' | 'security' | 'pending' | 'about';
 
 export interface Prefs {
   theme: 'light' | 'dark' | 'auto';
@@ -65,7 +65,7 @@ export interface State {
   toasts: Toast[];
   refreshing: boolean;
   prefs: Prefs;
-  svcTab: 'containers' | 'images' | 'updates';
+  svcTab: 'containers' | 'images' | 'updates' | 'avail';
   svcFilter: 'all' | 'running' | 'issues' | 'stopped';
   search: string;
   imgFilter: 'all' | 'used' | 'unused';
@@ -79,6 +79,7 @@ export interface State {
   scanning: boolean;
   wiz: WizState | null;
   pull: PullState | null;
+  logs: string | null;
   catalog: CatalogApp[] | null;
   updJobs: Record<string, string>;
   updView: Record<string, Job>;
@@ -97,7 +98,7 @@ let state: State = {
   phase: 'loading', authConfigured: true, user: '', totp: false, recoveryLeft: 0, snap: null, online: true, lastOk: 0,
   page: 'home', moreOpen: false, drawer: null, modal: null, toasts: [], refreshing: false, prefs: loadPrefs(),
   svcTab: 'containers', svcFilter: 'all', search: '', imgFilter: 'all', imgSearch: '', netFilter: 'all',
-  setTab: 'ui', range: '24h', hist: {}, busy: {}, checkingPc: false, scanning: false, wiz: null, pull: null, catalog: null,
+  setTab: 'ui', range: '24h', hist: {}, busy: {}, checkingPc: false, scanning: false, wiz: null, pull: null, logs: null, catalog: null,
   updJobs: {}, updView: {}, busyBackup: false, toolDraft: null, editingTool: false,
 };
 const subs = new Set<() => void>();
@@ -151,7 +152,7 @@ export function confirmModal(m: Omit<ModalSpec, 'onConfirm'> & { onConfirm: () =
 /* ---------- Conexión con el servidor ---------- */
 function handleErr(e: unknown, title: string): boolean {
   if (e instanceof ApiError && e.status === 401) {
-    set({ phase: 'login', snap: null, user: '', modal: null, drawer: null, wiz: null, pull: null });
+    set({ phase: 'login', snap: null, user: '', modal: null, drawer: null, wiz: null, pull: null, logs: null });
     toast({ tone: 'warn', title: 'La sesión ha caducado', body: 'Vuelve a iniciar sesión.' });
     return true;
   }

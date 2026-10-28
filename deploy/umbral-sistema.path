@@ -1,0 +1,9 @@
+[Unit]
+Description=Umbral: lectura pedida desde el panel (botón Comprobar)
+
+[Path]
+PathModified=/var/lib/umbral/helper-request
+Unit=umbral-sistema.service
+
+[Install]
+WantedBy=paths.target
