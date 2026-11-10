@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 
 /* Iconos de interfaz: los mismos trazos de la maqueta (24×24, línea de 1,7). */
 export const ICONS = {
@@ -180,17 +180,43 @@ export function Search({ value, onChange, placeholder, label }: { value: string;
   );
 }
 
-export function Panel({ title, id, hint, right, children, className = 'panel' }: { title?: ReactNode; id?: string; hint?: ReactNode; right?: ReactNode; children: ReactNode; className?: string }) {
+/** Panel plegable: empieza plegado y recuerda en este navegador si se dejó abierto. */
+export function usePlegado(key: string): Fold {
+  const k = 'umbral.abierto.' + key;
+  const [open, setOpen] = useState(() => { try { return localStorage.getItem(k) === '1'; } catch { return false; } });
+  const toggle = () => setOpen((o) => {
+    try { if (o) localStorage.removeItem(k); else localStorage.setItem(k, '1'); } catch { /* almacenamiento bloqueado */ }
+    return !o;
+  });
+  return { open, toggle };
+}
+export interface Fold { open: boolean; toggle: () => void }
+
+export function Panel({ title, id, hint, right, children, className = 'panel', fold, summary }: {
+  title?: ReactNode; id?: string; hint?: ReactNode; right?: ReactNode; children: ReactNode; className?: string;
+  /** Si se pasa, la cabecera pliega y despliega el contenido. */
+  fold?: Fold;
+  /** Resumen que se ve con el panel plegado. */
+  summary?: ReactNode;
+}) {
+  const body = id ? id + '-body' : undefined;
+  const h = fold
+    ? <h2 id={id}><button type="button" className="fold-btn" aria-expanded={fold.open} aria-controls={body} onClick={fold.toggle}>
+        <Icon name="chev" className={'i fold-chev' + (fold.open ? ' open' : '')} />{title}<span className="sr">{fold.open ? ' (plegar)' : ' (desplegar)'}</span>
+      </button></h2>
+    : <h2 id={id}>{title}</h2>;
+  const shown = !fold || fold.open;
   return (
-    <section className={className} aria-labelledby={id}>
+    <section className={className + (fold && !fold.open ? ' folded' : '')} aria-labelledby={id}>
       {title !== undefined && (
         <div className="ph">
-          {hint !== undefined && typeof hint !== 'string' ? <div><h2 id={id}>{title}</h2>{hint}</div> : <h2 id={id}>{title}</h2>}
-          {typeof hint === 'string' && <span className="hint">{hint}</span>}
-          {right}
+          {shown && hint !== undefined && typeof hint !== 'string' ? <div>{h}{hint}</div> : h}
+          {shown && typeof hint === 'string' && <span className="hint">{hint}</span>}
+          {shown && right}
         </div>
       )}
-      {children}
+      {fold && !fold.open && summary !== undefined && <p className="fold-sum">{summary}</p>}
+      {shown && (fold ? <div id={body}>{children}</div> : children)}
     </section>
   );
 }

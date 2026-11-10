@@ -12,6 +12,14 @@
 .ph{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:16px var(--pad) 8px}
 .ph h2{margin:0;font-size:17px;font-weight:600;letter-spacing:-.015em}
 .ph .hint{font-size:13px;color:var(--ink3)}
+.fold-btn{border:0;background:transparent;padding:0;margin:0;font:inherit;color:inherit;letter-spacing:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:6px;text-align:left}
+.fold-btn:hover .fold-chev{color:var(--accent)}
+.fold-btn:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:6px}
+.fold-chev{width:16px;height:16px;color:var(--ink3);transition:transform .2s ease}
+.fold-chev.open{transform:rotate(90deg)}
+.folded .ph{padding-bottom:4px}
+.fold-sum{margin:0;padding:0 var(--pad) 16px calc(var(--pad) + 22px);font-size:13px;color:var(--ink2)}
+@media (prefers-reduced-motion:reduce){.fold-chev{transition:none}}
 .pb{padding:var(--pad)}
 .muted{color:var(--ink3)}
 .small{font-size:12.5px}

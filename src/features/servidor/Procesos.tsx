@@ -2,7 +2,7 @@ import { Fragment, useState } from 'react';
 import type { CPUPeak, CPUSplit, ProcUse } from '../../data/types';
 import type { Derived } from '../../state/derive';
 import { adapter, run } from '../../state/store';
-import { Badge, Empty, Icon, Panel, Seg, agoIso, dur, fmt, st } from '../../design/ui';
+import { Badge, Empty, Icon, Panel, Seg, agoIso, dur, fmt, st, usePlegado } from '../../design/ui';
 import { usePaged } from '../../design/Pager';
 import type { LiveHistory } from './live';
 
@@ -106,9 +106,13 @@ export function ProcesosAhora({ d, live }: { d: Derived; live: LiveHistory | nul
   const pg = usePaged(rows, 'procesos');
   const note = now && !live ? splitNote(now.split) : '';
   const hintText = !d.srvOn ? 'Último dato conocido' : live ? 'En vivo · cada 2 s' : now ? 'Media de los últimos 15 s · ' + now.tasks + ' procesos' : undefined;
+  const fold = usePlegado('procesos');
+  const first = rows[0];
+  const summary = cpu?.error ? cpu.error : !first ? 'Aún sin datos: el servidor necesita dos lecturas.'
+    : 'Lo que más usa ahora: ' + first.name + ' (' + origin(first).toLowerCase() + '), ' + pct(first.cpu) + ' del procesador.';
 
   return (
-    <Panel title="Qué usa el procesador" id="procs-h" hint={hintText}>
+    <Panel title="Qué usa el procesador" id="procs-h" hint={hintText} fold={fold} summary={summary}>
       {cpu?.error ? <Empty icon="info">{cpu.error}</Empty> : !rows.length ? (
         <Empty icon="clock">El servidor necesita dos lecturas para calcularlo. Vuelve en 15 segundos.</Empty>
       ) : (
@@ -177,11 +181,17 @@ export function PicosCPU({ d }: { d: Derived }) {
   const peaks = cpu?.peaks || [];
   const pg = usePaged(peaks, 'picos');
   const [open, setOpen] = useState<string | null>(null);
+  const fold = usePlegado('picos');
   if (!cpu || cpu.error) return null;
+  const last = peaks[0];
+  const cause = last?.top?.[0];
+  const summary = !last ? 'Ningún pico por encima del ' + cpu.threshold + ' % desde que Umbral los anota.'
+    : (last.open ? 'Hay un pico en curso' : 'El último pico fue ' + agoIso(last.from).toLowerCase()) + ': máx. ' + pct(last.max) + (cause ? ', sobre todo por ' + cause.name : '') + '. '
+      + peaks.length + (peaks.length === 1 ? ' pico guardado.' : ' picos guardados.');
   const setThr = (v: string) => void run('No se pudo cambiar el umbral', () => adapter().setPeakThreshold(Number(v)));
 
   return (
-    <Panel title="Picos del procesador" id="peaks-h" hint={'Se anota cuando pasa del ' + cpu.threshold + ' % y qué programas lo causaron. Se guardan 30 días (como mucho 100)'}
+    <Panel title="Picos del procesador" id="peaks-h" fold={fold} summary={summary} hint={'Se anota cuando pasa del ' + cpu.threshold + ' % y qué programas lo causaron. Se guardan 30 días (como mucho 100)'}
       right={d.serverBlocked ? <span className="hint">{d.serverBlocked}</span>
         : <Seg<string> value={String(cpu.threshold)} label="Umbral de los picos" options={[['50', '50 %'], ['70', '70 %'], ['90', '90 %']]} onChange={setThr} />}>
       {peaks.length ? (
