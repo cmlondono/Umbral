@@ -1,15 +1,18 @@
 import { useState } from 'react';
 import type { FileSnapshot, Job } from '../../data/types';
 import type { Derived } from '../../state/derive';
-import { accept, adapter, follow, handleErr, toast } from '../../state/store';
+import { accept, adapter, follow, handleErr, toast, useStore } from '../../state/store';
 import { Badge, Icon, Seg, Switch, agoIso, dur, memLabel, st } from '../../design/ui';
 import { usePaged } from '../../design/Pager';
+import { Codigo2FA, Falta2FA } from './Codigo2FA';
 
 /* Copia completa de Nextcloud (base de datos y archivos) al disco externo,
  * en instantáneas que solo ocupan lo que cambia. */
 export function CopiaArchivos({ d, snaps, onDone }: { d: Derived; snaps: FileSnapshot[]; onDone: () => void }) {
   const cfg = d.s.config;
+  const totp = useStore().totp;
   const [job, setJob] = useState<Job | null>(null);
+  const [asking, setAsking] = useState(false);
   const pg = usePaged(snaps, 'instantaneas');
   const blocked = d.serverBlocked;
   const running = !!job && job.state === 'running';
@@ -19,15 +22,18 @@ export function CopiaArchivos({ d, snaps, onDone }: { d: Derived; snaps: FileSna
   const restoreDb = 'gunzip -c COPIA.sql.gz | docker exec -i ' + (dbc?.name || 'CONTENEDOR-DB') +
     (dbc?.image.includes('postgres') ? ' psql -U postgres' : ' sh -c \'exec mariadb -u"${MARIADB_USER:-$MYSQL_USER}" -p"${MARIADB_PASSWORD:-$MYSQL_PASSWORD}" "${MARIADB_DATABASE:-$MYSQL_DATABASE}"\'');
 
-  const start = async () => {
-    try {
-      const j = await adapter().backupNextcloud();
-      setJob(j);
-      const end = await follow(j.id, setJob);
-      if (end?.state === 'done') toast({ tone: 'ok', title: 'Copia completa hecha', body: end.message });
-      else if (end) toast({ tone: 'err', title: 'La copia no terminó', body: end.message });
+  // El código se comprueba en el servidor; si falla, el error se ve en el formulario.
+  const start = async (code: string) => {
+    const j = await adapter().backupNextcloud(code);
+    setAsking(false); setJob(j);
+    void (async () => {
+      try {
+        const end = await follow(j.id, setJob);
+        if (end?.state === 'done') toast({ tone: 'ok', title: 'Copia completa hecha', body: end.message });
+        else if (end) toast({ tone: 'err', title: 'La copia no terminó', body: end.message });
+      } catch (e) { handleErr(e, 'Se perdió el seguimiento de la copia'); }
       onDone();
-    } catch (e) { handleErr(e, 'No se pudo empezar la copia'); }
+    })();
   };
   const saveOpt = (p: Partial<typeof cfg>) => void adapter().saveConfig({ ...cfg, ...p }).then(accept).catch((e) => handleErr(e, 'No se pudo guardar'));
 
@@ -38,8 +44,11 @@ export function CopiaArchivos({ d, snaps, onDone }: { d: Derived; snaps: FileSna
           <span className="strong" style={{ display: 'block' }}>Copia completa de Nextcloud</span>
           <span className="sub" style={{ display: 'block' }}>La base de datos y todos los archivos de los usuarios, en {dst}. La primera vez lo copia todo; después solo lo nuevo o cambiado, y cada copia se puede restaurar entera.</span>
         </div>
-        <button className="btn btn-primary" onClick={() => void start()} disabled={!!blocked || running}><Icon name={running ? 'loader' : 'download'} className={running ? 'i spin' : 'i'} />{running ? 'Copiando…' : 'Hacer copia completa ahora'}</button>
+        <button className="btn btn-primary" onClick={() => setAsking(true)} disabled={!!blocked || running || asking || !totp}><Icon name={running ? 'loader' : 'download'} className={running ? 'i spin' : 'i'} />{running ? 'Copiando…' : 'Hacer copia completa ahora'}</button>
       </div>
+
+      {!totp && !blocked && <Falta2FA what="Hacer la copia desde el panel" />}
+      {asking && <Codigo2FA submitLabel="Empezar la copia" onSubmit={start} onCancel={() => setAsking(false)} />}
 
       {job && (
         <ol className="job-steps">

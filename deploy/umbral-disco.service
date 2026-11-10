@@ -1,0 +1,15 @@
+[Unit]
+Description=Umbral: preparar el disco de copias de seguridad (pedido desde el panel)
+
+# Corre como root porque formatear, montar y editar /etc/fstab lo necesitan.
+# Solo actúa sobre discos USB que no use el sistema, y vuelve a comprobarlo
+# todo por su cuenta: no se fía de la petición del panel. No lleva
+# aislamiento de montajes (PrivateTmp, ProtectSystem...) porque el disco
+# tiene que quedar montado para todo el sistema, no solo para este proceso.
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/umbral disco -datos /var/lib/umbral
+StateDirectory=umbral-helper
+StateDirectoryMode=0755
+TimeoutStartSec=20min
+NoNewPrivileges=yes

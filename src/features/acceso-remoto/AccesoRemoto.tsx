@@ -19,7 +19,7 @@ export function AccesoRemoto({ d }: { d: Derived }) {
     if (ok) set({ editingTool: false, toolDraft: null });
   };
   const hint = !tool ? 'Elige arriba la herramienta de escritorio remoto para poder conectarte.'
-    : d.pcState === 'notConfigured' ? 'Añade la IP y la MAC del PC en Ajustes › Dispositivos registrados.'
+    : d.pcState === 'notConfigured' ? 'Añade la MAC del PC en Ajustes › Dispositivos registrados.'
     : d.pcState === 'off' ? 'El PC está apagado: enciéndelo con Wake-on-LAN y conéctate cuando aparezca como encendido.'
     : d.pcState === 'unknown' ? 'No se puede saber si el PC está encendido mientras el servidor no responda.'
     : d.pcState === 'waking' ? 'Esperando a que el PC responda.' : 'Listo para conectarte.';
@@ -56,7 +56,7 @@ export function AccesoRemoto({ d }: { d: Derived }) {
         <div>
           <div className="lrow" style={{ flexWrap: 'wrap' }}>
             <span className="ico-box"><Icon name="monitor" /></span>
-            <div className="grow" style={{ minWidth: 180 }}><span className="strong">{d.s.pc.name || 'PC de escritorio'}</span><span className="sub">{(d.s.pc.ip || 'Sin IP') + ' · ' + (tool ? tool.label : 'herramienta sin elegir')}</span></div>
+            <div className="grow" style={{ minWidth: 180 }}><span className="strong">{d.s.pc.name || 'PC de escritorio'}</span><span className="sub">{(d.s.pc.ip || 'IP aún no detectada') + ' · ' + (tool ? tool.label : 'herramienta sin elegir')}</span></div>
             <Badge s={d.pcState === 'notConfigured' ? st('notConfigured') : st(d.pcState)} />
             <div className="row-actions" style={{ flexWrap: 'wrap' }}>
               {d.pcState !== 'on' && <ActButton a={pa.wake} />}

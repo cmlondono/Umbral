@@ -411,12 +411,38 @@ func (a *App) Handler(web fs.FS) http.Handler {
 		writeJSON(w, 200, a.Snapshot())
 	})
 
+	/* Picos del procesador */
+	auth("PUT /api/cpu/threshold", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Pct int `json:"pct"`
+		}
+		if err := readJSON(r, &body); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		if !a.CPU.SetThreshold(body.Pct) {
+			fail(w, 400, "El umbral de los picos debe ser 50, 70 o 90 %.")
+			return
+		}
+		a.Log(userOf(r), "Procesador", "Umbral de picos: "+strconv.Itoa(body.Pct)+" %", nil, "")
+		writeJSON(w, 200, a.Snapshot())
+	})
+
 	/* Copias de seguridad */
 	auth("GET /api/backups", func(w http.ResponseWriter, r *http.Request) {
 		files, dir := a.Backups()
-		writeJSON(w, 200, map[string]any{"files": files, "copyDir": dir, "ncFiles": a.ncFilesLog()})
+		writeJSON(w, 200, map[string]any{"files": files, "copyDir": dir, "ncFiles": a.ncFilesLog(), "disks": a.ExternalDisks(), "diskHelper": DiskHelperInstalled()})
 	})
+	// La copia completa y preparar el disco piden el código del doble factor.
 	auth("POST /api/backups/nextcloud", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Code string `json:"code"`
+		}
+		_ = readJSON(r, &body)
+		if err := a.Auth.VerifyCode(userOf(r), body.Code); err != nil {
+			fail(w, 403, err.Error())
+			return
+		}
 		j, err := a.BackupNextcloudFiles(userOf(r))
 		if err != nil {
 			fail(w, 409, err.Error())
@@ -444,6 +470,35 @@ func (a *App) Handler(web fs.FS) http.Handler {
 		}
 		files, dir := a.Backups()
 		writeJSON(w, 200, map[string]any{"copied": n, "files": files, "copyDir": dir, "ncFiles": a.ncFilesLog()})
+	})
+
+	auth("POST /api/disks/prepare", func(w http.ResponseWriter, r *http.Request) {
+		var b struct {
+			Action  string `json:"action"`
+			Disk    string `json:"disk"`
+			Serial  string `json:"serial"`
+			Size    int64  `json:"size"`
+			Code    string `json:"code"`
+			Confirm bool   `json:"confirm"`
+		}
+		if err := readJSON(r, &b); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		if !b.Confirm {
+			fail(w, 400, "Esta acción necesita confirmación.")
+			return
+		}
+		if err := a.Auth.VerifyCode(userOf(r), b.Code); err != nil {
+			fail(w, 403, err.Error())
+			return
+		}
+		j, err := a.PrepareDisk(userOf(r), b.Action, b.Disk, b.Serial, b.Size)
+		if err != nil {
+			fail(w, 409, err.Error())
+			return
+		}
+		writeJSON(w, 202, j.copy())
 	})
 
 	/* Avisos y accesos */

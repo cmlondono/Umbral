@@ -91,8 +91,11 @@ func checkCopyDir(dst, src string) CopyDirStatus {
 	s := CopyDirStatus{Path: dst}
 	st, err := os.Stat(dst)
 	switch {
+	case errors.Is(err, os.ErrNotExist) && !diskMounted(dst):
+		s.Problem = "El disco de copias no está conectado. Conéctalo al servidor y pulsa «Usar este disco» en la lista de discos."
+		return s
 	case errors.Is(err, os.ErrNotExist):
-		s.Problem = "La carpeta no existe. ¿Está conectado y montado el disco? Créala con: sudo mkdir -p " + dst + " && sudo chown umbral: " + dst
+		s.Problem = "La carpeta no existe en el disco. Créala con: sudo mkdir -p " + dst + " && sudo chown umbral: " + dst
 		return s
 	case err != nil:
 		s.Problem = "No se puede leer la carpeta: " + err.Error()

@@ -196,6 +196,41 @@ func (a *Auth) useSecondFactorLocked(user string, rec *userRecord, code string) 
 	return false
 }
 
+// ErrNeed2FA: la acción exige tener activado el doble factor.
+var ErrNeed2FA = errors.New("Esta acción exige la verificación en dos pasos. Actívala en Ajustes › Seguridad.")
+
+// VerifyCode confirma una acción sensible con un código de la app (o uno de
+// recuperación). Tras varios fallos se bloquea un rato, como el inicio de sesión.
+func (a *Auth) VerifyCode(user, code string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.syncLocked()
+	rec, ok := a.users[user]
+	if !ok || rec.TOTP == "" {
+		return ErrNeed2FA
+	}
+	key := "2fa:" + user
+	f := a.fails[key]
+	if f != nil && time.Now().Before(f.until) {
+		return fmt.Errorf("Demasiados códigos incorrectos. Espera %d minutos.", int(time.Until(f.until).Minutes())+1)
+	}
+	if strings.TrimSpace(code) == "" {
+		return ErrNeedCode
+	}
+	if a.useSecondFactorLocked(user, &rec, code) {
+		delete(a.fails, key)
+		return nil
+	}
+	if f == nil || time.Now().After(f.until) && f.n >= maxFails {
+		f = &failRecord{}
+		a.fails[key] = f
+	}
+	if f.n++; f.n >= maxFails {
+		f.until = time.Now().Add(lockFor)
+	}
+	return errors.New("El código no es correcto.")
+}
+
 // RecoveryLeft dice cuántos códigos de recuperación quedan.
 func (a *Auth) RecoveryLeft(user string) int {
 	a.mu.Lock()

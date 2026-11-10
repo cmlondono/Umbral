@@ -6,6 +6,8 @@ import { backupDb, copySsh, ctrAction, imgRef, openUrl, pcActions, removeImages,
 import { Wizard, openWizardForImage } from '../features/servicios/Wizard';
 import { ContainerExtra, LogsModal } from '../features/servicios/ContainerExtra';
 import { pctLabel } from '../features/servicios/Disponibilidad';
+import { DeviceExtra } from '../features/inicio/DeviceExtra';
+import { deviceIcon } from '../features/red/Red';
 
 interface DrawerView {
   icon: IconName; title: string; subtitle: string; badge: StateInfo; second?: StateInfo; note?: string;
@@ -21,16 +23,28 @@ function deviceDrawer(id: string, d: Derived): DrawerView {
     const pc = s.pc;
     return { icon: 'monitor', title: pc.name || 'PC de escritorio', subtitle: 'Computador personal' + (pc.ip ? ' · ' + pc.ip : ''), badge: d.pcState === 'notConfigured' ? st('notConfigured') : st(d.pcState),
       facts: [
-        { k: 'Dirección IP', v: pc.ip || 'Sin configurar' }, { k: 'Dirección MAC', v: pc.mac || 'Sin configurar' },
+        { k: 'Dirección IP', v: pc.ip ? pc.ip + (d.s.config.pc.ip && d.s.config.pc.ip !== pc.ip ? ' (detectada por su MAC)' : '') : 'Se detecta sola cuando el PC aparece en la red' }, { k: 'Dirección MAC', v: pc.mac || 'Sin configurar' },
         { k: 'Última vez visto', v: d.pcState === 'on' ? 'Ahora' : pc.lastSeen ? agoIso(pc.lastSeen) : 'Todavía no se ha visto' },
         { k: 'Último encendido', v: pc.lastWake ? agoIso(pc.lastWake) + ' desde el panel' : 'Ninguno desde el panel' },
-        { k: 'Cómo se comprueba', v: 'Conexión TCP al puerto ' + s.config.pc.checkPort + ' y tabla ARP del servidor' },
+        { k: 'Cómo se comprueba', v: 'Se sigue por su MAC, así que no necesita IP fija. Cuenta como encendido si contesta por TCP (puerto ' + s.config.pc.checkPort + ', 445, 135 o 22) desde esa MAC.' },
         { k: 'Wake-on-LAN', v: pc.mac ? 'Lo envía ' + s.server.hostname + ' a la difusión de la red local.' : 'Falta la MAC' },
       ],
       groups: [
         { title: 'Acciones', desc: 'Se ejecutan desde el servidor.', actions: [a.wake, a.check] },
         { title: 'Requieren un servicio externo', desc: 'El panel abre la herramienta; la conexión la gestiona ella.', actions: [a.remote] },
       ] };
+  }
+  if (id.startsWith('mac:')) {
+    const v = s.network.devices.find((k) => k.mac === id.slice(4));
+    if (v) {
+      return { icon: deviceIcon(v, s.network.gateway), title: v.name || 'Sin nombre', subtitle: v.vendor || 'Equipo de la red', badge: !d.srvOn ? st('unknown') : v.online ? st('connected') : st('noReply', 'Desconectado'),
+        facts: [
+          { k: 'Dirección IP', v: v.ip + ' (la última en la que se vio)' }, { k: 'Dirección MAC', v: v.mac },
+          { k: 'Última vez visto', v: v.online ? 'Ahora' : agoIso(v.lastSeen) }, { k: 'Visto por primera vez', v: agoIso(v.firstSeen) },
+          ...(v.blocked ? [{ k: 'Internet', v: 'Bloqueado en el router' }] : []),
+        ],
+        groups: [], extra: <DeviceExtra key={v.mac} v={v} blocked={d.serverBlocked} /> };
+    }
   }
   if (id === 'server') {
     return { icon: 'server', title: 'Servidor de casa', subtitle: 'Servidor doméstico · ' + s.server.hostname, badge: st(d.srvOn ? 'online' : 'offline'),

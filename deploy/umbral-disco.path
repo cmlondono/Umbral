@@ -1,0 +1,9 @@
+[Unit]
+Description=Umbral: preparar el disco de copias cuando lo pide el panel
+
+[Path]
+PathModified=/var/lib/umbral/disk-request
+Unit=umbral-disco.service
+
+[Install]
+WantedBy=paths.target

@@ -49,7 +49,7 @@ export function Dispositivos({ d }: { d: Derived }) {
         {reg.pager}
       </Panel>
 
-      <Panel title="Mis dispositivos" id="oth-h" hint="Los que añades desde Red" right={<button className="btn btn-sm" onClick={() => nav('network')}><Icon name="plus" />Añadir dispositivo</button>}>
+      <Panel title="Mis dispositivos" id="oth-h" hint="Los que añades desde Inicio o desde Red" right={<button className="btn btn-sm" onClick={() => nav('network')}><Icon name="plus" />Añadir dispositivo</button>}>
         {pinned.length ? (
           <div className="tbox">
             <table className="tbl">

@@ -37,12 +37,12 @@ systemctl daemon-reload
 systemctl enable umbral >/dev/null
 systemctl restart umbral
 
-echo "5/6  Ayudante de sistema (salud de los discos y actualizaciones de Debian)"
-for u in umbral-sistema.service umbral-sistema.timer umbral-sistema.path; do
+echo "5/6  Ayudantes de sistema (salud de los discos, actualizaciones de Debian y disco de copias)"
+for u in umbral-sistema.service umbral-sistema.timer umbral-sistema.path umbral-disco.service umbral-disco.path; do
   install -m 0644 ./$u /etc/systemd/system/$u
 done
 systemctl daemon-reload
-systemctl enable --now umbral-sistema.timer umbral-sistema.path >/dev/null
+systemctl enable --now umbral-sistema.timer umbral-sistema.path umbral-disco.path >/dev/null
 systemctl start --no-block umbral-sistema.service
 command -v smartctl >/dev/null 2>&1 || echo "     Para ver la salud de los discos instala smartmontools: sudo apt install smartmontools"
 

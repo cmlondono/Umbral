@@ -18,9 +18,10 @@
 | CPU, memoria, discos, red y temperatura | 15 s | `/proc/stat`, `/proc/meminfo`, `/proc/mounts` con `statfs`, `/proc/net/dev`, `/sys/class/hwmon` |
 | Vista «En vivo» de las gráficas | 2 s, solo mientras alguien la mira | Lectura ligera de CPU, memoria, red y temperatura, sin discos y sin tocar el historial. Si varias pestañas piden a la vez, comparten la misma lectura. |
 | Docker | 15 s | API por el socket, sin SDK. El consumo de cada contenedor solo se mide mientras alguien mira el panel. |
+| Qué usa el procesador y sus picos | 15 s | `/proc/<pid>/stat` y `/proc/<pid>/cgroup` (solo al ver un proceso nuevo), agrupados por programa y origen: contenedor, servicio, sesión o núcleo. El tiempo de los procesos que terminan entre lecturas pasa al padre que los espera. Al pasar del umbral (50, 70 o 90 %) se abre un pico con la media de cada programa; se guardan 30 días, como mucho 100, en `cpupeaks.json`. |
 | Disponibilidad de los servicios | 15 s | Con el estado de Docker ya leído. Cubos de una hora durante 7 días y las 100 últimas caídas. |
 | Nextcloud, Tailscale, router e Internet | 60 s | `/status.php`, `tailscale status --json` y `tailscale serve status --json`, la API del router y una conexión TCP a dos DNS públicos |
-| PC | 30 s | Conexión TCP al puerto configurado y tabla ARP |
+| PC | 30 s (cada 20 s durante 3 min tras un encendido) | Se sigue por su MAC: la IP sale del último escaneo, así que no hace falta IP fija. «Encendido» exige que conteste por TCP (puerto configurado, 445, 135 o 22) y que la respuesta venga de su MAC; estar en la tabla ARP no basta, porque las tarjetas con Wake-on-LAN responden a ARP con el PC apagado. |
 | Red local | 5 min (configurable) | Un datagrama a cada IP de la subred y lectura de `/proc/net/arp`. Nombres por DNS, mDNS, NetBIOS y el DHCP del router; fabricante por la lista OUI de la IEEE, que se descarga una vez. |
 | Actualizaciones de imágenes | 24 h | Petición HEAD al registro para comparar el digest, sin descargar nada |
 | Actualizaciones de Debian | 6 h | `apt-get -s dist-upgrade`, que solo simula y no necesita root |
@@ -157,6 +158,16 @@ Detrás de ese proxy, Umbral toma la IP real de la última entrada de `X-Forward
 - `apt-get update`.
 
 Escribe los resultados en `/var/lib/umbral-helper`, una carpeta de root que Umbral solo puede leer, con nombres temporales aleatorios y renombrado. Así root nunca sigue un enlace simbólico ajeno.
+
+## Ayudante de discos
+
+`umbral-disco.service` ejecuta `umbral disco` como root cuando el panel escribe `/var/lib/umbral/disk-request` (`umbral-disco.path`). Prepara el disco externo de las copias: formatearlo en ext4 si se pidió, montarlo, añadirlo a `/etc/fstab` con `nofail` y crear la carpeta `umbral`.
+
+- Umbral detecta los discos sin root, leyendo `/sys/block`, `/run/udev/data` y `/proc/self/mountinfo`.
+- La petición solo dice qué disco (nombre, número de serie y tamaño) y si usarlo o formatearlo. Caduca a los 5 minutos.
+- El ayudante no se fía de ella: vuelve a detectar el disco y repite las comprobaciones. Solo actúa sobre discos USB sin nada montado fuera de `/mnt` o `/media`, y que no formen parte de LVM, RAID, un volumen cifrado o la memoria de intercambio. Para formatear, nada puede estar montado.
+- No lleva aislamiento de montajes, porque el disco tiene que quedar montado para todo el sistema.
+- La API exige `confirm: true` y el código del doble factor, que tiene que estar activado. La copia completa lanzada desde el panel también pide el código; las automatizaciones no.
 
 ## Seguridad
 

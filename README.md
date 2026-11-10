@@ -26,6 +26,7 @@ Es un único programa de unos 9 MB que gasta alrededor de 15 MB de RAM. No usa b
   - las copias se pueden descargar desde el panel;
   - se hacen a mano o cada noche, con aviso al móvil si fallan.
 - **Red**:
+  - un mapa en Inicio con los equipos de casa que elijas, su IP actual y su estado;
   - los dispositivos conectados, con su nombre, fabricante y estado;
   - con un router OpenWrt o MikroTik: nombres del DHCP, quitar Internet a un equipo y reiniciar el router.
 - **PC**: encenderlo con Wake-on-LAN y abrir el escritorio remoto (RDP, RustDesk o Moonlight).
@@ -108,7 +109,8 @@ ssh -t USUARIO@SERVIDOR "cd umbral && sudo sh instalar.sh"
 - copia el binario a `/usr/local/bin/umbral`;
 - crea `/var/lib/umbral` (configuración y estado) y `/srv/umbral` (datos de lo que despliegues);
 - instala y arranca el servicio `umbral`;
-- instala el **ayudante de sistema** (`umbral-sistema`): lee la salud de los discos y la lista de paquetes de Debian cada 6 horas, o cuando pulsas «Comprobar ahora». Es lo único que corre como root, y no recibe datos del panel;
+- instala el **ayudante de sistema** (`umbral-sistema`): lee la salud de los discos y la lista de paquetes de Debian cada 6 horas, o cuando pulsas «Comprobar ahora». No recibe datos del panel;
+- instala el **ayudante de discos** (`umbral-disco`): prepara el disco USB de las copias cuando lo pides desde el panel, con el código del doble factor. Junto con el anterior, es lo único que corre como root;
 - si hay Tailscale, da permiso al usuario `umbral` para publicar servicios con HTTPS.
 
 ## 2. Crear tu usuario
@@ -154,7 +156,7 @@ Para hacer una copia de seguridad de Umbral basta con copiar `/var/lib/umbral`.
 | Ver los usuarios | `sudo -u umbral umbral usuario lista -datos /var/lib/umbral` |
 | Quitar el doble factor (móvil perdido) | `sudo -u umbral umbral usuario quitar-2fa NOMBRE -datos /var/lib/umbral` |
 | Actualizar Umbral | Descarga la versión nueva y vuelve a ejecutar `sudo sh instalar.sh`. Los datos se conservan. |
-| Desinstalar | `sudo systemctl disable --now umbral umbral-sistema.timer umbral-sistema.path && sudo rm /etc/systemd/system/umbral*.service /etc/systemd/system/umbral-sistema.* /usr/local/bin/umbral` (y, si quieres, `/var/lib/umbral` y `/var/lib/umbral-helper`) |
+| Desinstalar | `sudo systemctl disable --now umbral umbral-sistema.timer umbral-sistema.path umbral-disco.path && sudo rm /etc/systemd/system/umbral*.service /etc/systemd/system/umbral-sistema.* /etc/systemd/system/umbral-disco.* /usr/local/bin/umbral` (y, si quieres, `/var/lib/umbral` y `/var/lib/umbral-helper`) |
 
 La configuración avanzada está en `/var/lib/umbral/config.json`:
 - `listen`: puerto, por defecto `:8420`.

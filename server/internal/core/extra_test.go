@@ -121,3 +121,21 @@ func TestParseRsyncStats(t *testing.T) {
 		t.Fatalf("stats = %d, %d MB, %d MB", f, x, tot)
 	}
 }
+
+func TestPCIPByMAC(t *testing.T) {
+	s := &Scanner{known: map[string]*NetDevice{"AA:BB:CC:00:11:22": {IP: "192.168.1.77", MAC: "AA:BB:CC:00:11:22"}}}
+	a := &App{Net: s}
+	if ip := a.pcIP(PCConfig{MAC: "aa:bb:cc:00:11:22", IP: "192.168.1.20"}); ip != "192.168.1.77" {
+		t.Fatalf("la IP vista en la red debe mandar sobre la configurada: %s", ip)
+	}
+	if ip := a.pcIP(PCConfig{MAC: "AA:BB:CC:99:99:99", IP: "192.168.1.20"}); ip != "192.168.1.20" {
+		t.Fatalf("sin verlo en la red, se usa la configurada: %s", ip)
+	}
+	// Una dirección que no contesta (rango de documentación) no cuenta como encendido.
+	if probePC("192.0.2.1", "AA:BB:CC:00:11:22", 3389, 300*time.Millisecond) {
+		t.Fatal("una IP que no contesta no puede dar el PC por encendido")
+	}
+	if probePC("", "AA:BB:CC:00:11:22", 3389, 300*time.Millisecond) {
+		t.Fatal("sin IP no puede estar encendido")
+	}
+}

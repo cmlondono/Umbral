@@ -132,14 +132,14 @@ function Equipos({ d }: { d: Derived }) {
         <div className="pb" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           {candidates.length > 0 && (
             <div className="field"><span className="f-l">Rellenar con un equipo detectado en la red</span>
-              <div className="chips">{candidates.slice(0, 12).map((v) => <button key={v.mac} className={'chip' + (f.pc.mac === v.mac ? ' on' : '')} aria-pressed={f.pc.mac === v.mac} onClick={() => pc({ ip: v.ip, mac: v.mac, name: f.pc.name || v.name })}>{(v.name || 'Sin nombre') + ' · ' + v.ip}</button>)}</div>
+              <div className="chips">{candidates.slice(0, 12).map((v) => <button key={v.mac} className={'chip' + (f.pc.mac === v.mac ? ' on' : '')} aria-pressed={f.pc.mac === v.mac} onClick={() => pc({ ip: '', mac: v.mac, name: f.pc.name || v.name })}>{(v.name || 'Sin nombre') + ' · ' + v.ip}</button>)}</div>
               <span className="f-msg">Enciende el PC antes para que aparezca. La MAC debe ser la de la tarjeta de red por cable.</span></div>
           )}
           <div className="fgrid">
             <Field id="pc-n" label="Nombre" value={f.pc.name} onChange={(v) => pc({ name: v })} placeholder="ESCRITORIO-PC" />
-            <Field id="pc-ip" label="Dirección IP" value={f.pc.ip} onChange={(v) => pc({ ip: v.trim() })} placeholder="192.168.1.20" msg="Conviene reservarla en el router para que no cambie." />
+            <Field id="pc-ip" label="Dirección IP (opcional)" value={f.pc.ip} onChange={(v) => pc({ ip: v.trim() })} placeholder="Automática" msg={"Si el PC no tiene IP fija, déjala vacía: Umbral la encuentra por su MAC en cada escaneo." + (d.s.pc.ip && d.s.pc.ip !== f.pc.ip ? " Ahora está en " + d.s.pc.ip + "." : "")} />
             <Field id="pc-mac" label="Dirección MAC" value={f.pc.mac} onChange={(v) => pc({ mac: v.trim() })} placeholder="3C:7C:3F:A1:52:0E" mono msg="A esta dirección se envía el paquete de encendido." />
-            <Field id="pc-port" label="Puerto de comprobación" value={String(f.pc.checkPort || '')} onChange={(v) => pc({ checkPort: parseInt(v, 10) || 0 })} inputMode="numeric" msg="3389 si usas Escritorio remoto. Si el firewall lo bloquea, el PC aparecerá apagado." />
+            <Field id="pc-port" label="Puerto de comprobación" value={String(f.pc.checkPort || '')} onChange={(v) => pc({ checkPort: parseInt(v, 10) || 0 })} inputMode="numeric" msg="3389 si usas Escritorio remoto. Umbral también prueba 445, 135 y 22; si el firewall del PC los bloquea todos, aparecerá apagado." />
           </div>
           <details className="det"><summary>Opciones avanzadas</summary>
             <div style={{ marginTop: 12 }}><Field id="pc-bc" label="Dirección de difusión" value={f.pc.broadcast} onChange={(v) => pc({ broadcast: v.trim() })} placeholder="Automática" msg="Déjala vacía salvo que el PC esté en otra subred." /></div>
@@ -166,7 +166,7 @@ function Integraciones({ d }: { d: Derived }) {
   const rows: { name: string; purpose: string; badge: StateInfo; need: string }[] = [
     { name: 'Docker', purpose: 'Contenedores, imágenes, despliegues y actualizaciones', badge: x.docker.available ? st('connected') : st('err', 'Sin respuesta'), need: x.docker.available ? 'Versión ' + x.docker.version + '.' : x.docker.error || 'Añade el usuario umbral al grupo docker.' },
     { name: 'Métricas del sistema', purpose: 'CPU, memoria, discos y red, leídas de /proc', badge: x.metrics ? st('connected') : st('err', 'Sin datos'), need: x.metrics ? 'Sin agentes extra: el propio servicio las lee cada 15 s.' : x.metricsError || '' },
-    { name: 'Wake-on-LAN', purpose: 'Encender el PC', badge: x.pc.configured ? st('ok', 'Configurado') : st('pending'), need: x.pc.configured ? 'Activa también Wake-on-LAN en la BIOS y en la tarjeta de red del PC.' : 'Añade la IP y la MAC del PC en Dispositivos registrados.' },
+    { name: 'Wake-on-LAN', purpose: 'Encender el PC', badge: x.pc.configured ? st('ok', 'Configurado') : st('pending'), need: x.pc.configured ? 'Activa también Wake-on-LAN en la BIOS y en la tarjeta de red del PC. Funciona aunque su IP cambie.' : 'Añade la MAC del PC en Dispositivos registrados.' },
     { name: 'Nextcloud', purpose: 'Estado funcional de la aplicación', badge: !x.nextcloud.configured ? st('pending') : x.nextcloud.reachable ? st('connected') : st('err', 'Sin respuesta'), need: x.nextcloud.configured ? 'Se consulta ' + x.nextcloud.url + '/status.php cada minuto.' : 'Indica abajo su dirección, o publica su puerto para detectarla sola.' },
     { name: 'Tailscale', purpose: 'Acceso desde fuera de casa', badge: x.tailscale.running ? st('connected') : x.tailscale.installed ? st('err', 'Desconectado') : st('notConfigured', 'No instalado'), need: x.tailscale.running ? 'Para publicar servicios con HTTPS: sudo tailscale set --operator=umbral.' : 'Ejecuta tailscale up en el servidor.' },
     { name: 'Router', purpose: 'Nombres DHCP, bloquear Internet a un equipo y reiniciarlo', badge: !x.router.configured ? st('notConfigured', 'Sin integración') : x.router.connected ? st('connected') : st('err', 'Sin respuesta'), need: !x.router.configured ? 'Solo con routers que tienen API: OpenWrt o MikroTik. Configúralo abajo.' : x.router.connected ? (x.router.info?.model || '') + ' · ' + (x.router.info?.firmware || '') : x.router.error },
@@ -282,7 +282,7 @@ function CambiarContrasena() {
 function pending(d: Derived) {
   const x = d.s;
   return [
-    { title: 'Configurar el PC para encenderlo', why: 'Falta su IP y su MAC. Sin ellas no hay Wake-on-LAN.', done: x.pc.configured, goLabel: 'Ir a Dispositivos registrados', go: () => set({ setTab: 'devices' }) },
+    { title: 'Configurar el PC para encenderlo', why: 'Falta su MAC. Sin ella no hay Wake-on-LAN.', done: x.pc.configured, goLabel: 'Ir a Dispositivos registrados', go: () => set({ setTab: 'devices' }) },
     { title: 'Elegir la herramienta de escritorio remoto', why: 'Necesaria para conectarte al PC desde el panel.', done: !!x.config.remoteTool, goLabel: 'Ir a Acceso remoto', go: () => nav('remote') },
     ...(d.netdata ? [{ title: 'Retirar Netdata', why: 'Consume memoria de forma continua y este panel ya muestra las métricas esenciales.', done: false, goLabel: 'Ver Netdata', go: () => { nav('services'); set({ drawer: { type: 'service', id: d.netdata!.name } }); } }] : []),
     { title: 'Conectar Tailscale en el servidor', why: 'Para abrir el panel y encender el PC desde fuera de casa.', done: x.tailscale.running, goLabel: 'Ir a Acceso remoto', go: () => nav('remote') },

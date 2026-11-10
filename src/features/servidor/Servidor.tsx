@@ -9,6 +9,7 @@ import { peak } from './charts';
 import { Chart } from './Chart';
 import { SaludDiscos, SistemaOperativo } from './Sistema';
 import { Copias } from './Copias';
+import { PicosCPU, ProcesosAhora } from './Procesos';
 import { LIVE_POINTS, LIVE_STEP, useLive } from './live';
 
 const XL: Record<View, string[]> = { live: ['−5 min', '−4', '−3', '−2', '−1', 'Ahora'], '1h': ['−60 min', '−45', '−30', '−15', 'Ahora'], '24h': ['−24 h', '−18 h', '−12 h', '−6 h', 'Ahora'], '7d': ['−7 d', '−5 d', '−3 d', '−1 d', 'Hoy'] };
@@ -67,7 +68,7 @@ export function Servidor({ d }: { d: Derived }) {
             <div className={'charts' + (d.srvOn ? '' : ' stale')}>
               <Chart {...common} title="Procesador" now={lead + Math.round(cur ? cur.cpu : m.cpuPct) + ' %'} max={100} y={PCT}
                 series={[{ label: 'CPU', values: h?.cpu || [], color: 'var(--c1)', fmt: (v) => fmt(v) + ' %', area: true }]}
-                note={enough && cp?.t ? 'Máximo de ' + Math.round(cp.v) + ' % ' + when(cp.t) + '.' : growing} />
+                note={(enough && cp?.t ? 'Máximo de ' + Math.round(cp.v) + ' % ' + when(cp.t) + '. ' : growing + ' ') + 'Abajo verás qué lo usa y qué causó cada pico.'} />
               <Chart {...common} title="Tráfico de red" legend max={nmax} y={[nmax + ' Mbit/s', String(nmax / 2), '0']}
                 series={[
                   { label: 'Bajada', now: d.srvOn ? fmt(cur ? cur.rx : m.net.rxMbps) + ' Mbit/s' : '—', values: h?.rx || [], color: 'var(--c1)', fmt: (v) => fmt(v) + ' Mbit/s' },
@@ -102,6 +103,9 @@ export function Servidor({ d }: { d: Derived }) {
           </>
         )}
       </Panel>
+
+      <ProcesosAhora d={d} live={live ? lh : null} />
+      <PicosCPU d={d} />
 
       <Panel title="Almacenamiento" id="disk-h" hint="Aviso al 80 %, problema al 90 %">
         {!m?.disks.length ? <div className="empty"><Icon name="info" />Sin datos de discos.</div> : (

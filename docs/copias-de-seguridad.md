@@ -28,57 +28,57 @@ Guía para dejar Nextcloud protegido con copias en un disco externo y para resta
 - Un disco **distinto** del que tiene los datos de Nextcloud: si es el mismo, no protege de un fallo del disco. Umbral se niega a copiar en ese caso.
 - Espacio: algo más de lo que ocupen los datos de Nextcloud. Las copias siguientes solo suman lo que cambie. Umbral muestra el espacio libre.
 
-## 1. Preparar el disco (una sola vez)
+## 1. Preparar el disco desde el panel (una sola vez)
 
-> ⚠️ Formatear borra todo lo que tenga el disco. Si tiene algo que quieras conservar, cópialo antes.
+> ⚠️ Preparar un disco que no está en ext4 lo **borra entero**. Si tiene algo que quieras conservar, cópialo antes.
 
-1. Conecta el disco al servidor e identifícalo por su tamaño y modelo:
+Necesitas tener activada la **verificación en dos pasos** (Ajustes › Seguridad y acceso): Umbral pide el código para preparar el disco y para lanzar una copia desde el panel.
+
+1. Conecta el disco USB al servidor.
+2. Ve a **Servidor › Copias de seguridad › Disco externo**. En unos segundos aparece con su modelo, tamaño y lo que contiene.
+3. Según lo que tenga:
+   - **Viene de fábrica (NTFS, exFAT…) o vacío:** pulsa **Preparar para copias…**, escribe `BORRAR` y el código de tu app. Umbral lo borra y deja una sola partición ext4.
+   - **Ya está en ext4:** pulsa **Usar este disco** y escribe el código. No se borra nada. Si prefieres empezar de cero, tienes **Borrar y preparar…**.
+4. Umbral lo monta en `/mnt/copias` (o en `/mnt/copias-<id>` si esa carpeta ya está ocupada) y lo añade a `/etc/fstab` con `nofail`. Así se monta en cada arranque, y el servidor arranca igual si el disco no está. Antes guarda una copia de `/etc/fstab` en `/etc/fstab.antes-de-umbral`.
+5. Crea la carpeta `umbral` en el disco, se la da al usuario `umbral` y la guarda como carpeta de las copias. Verás los pasos y, al terminar, el disco aparecerá como **Disco de las copias**.
+
+**Si desconectas el disco y lo vuelves a conectar sin reiniciar,** aparecerá como «Desmontado». Pulsa **Volver a montarlo**.
+
+**Qué discos acepta:** solo discos conectados por USB que el sistema no esté usando. No toca ningún disco con particiones montadas fuera de `/mnt` o `/media`, ni los que formen parte de LVM, RAID, un volumen cifrado o la memoria de intercambio. Esto lo comprueba dos veces: en el panel y otra vez en el ayudante de root justo antes de actuar.
+
+**Cómo funciona por dentro:** Umbral no es root, así que deja una petición en `/var/lib/umbral/disk-request`. `umbral-disco.path` la detecta y lanza `umbral disco` como root. Ese proceso vuelve a detectar el disco (por nombre, número de serie y tamaño), repite todas las comprobaciones y escribe el progreso en `/var/lib/umbral-helper/disco.json`. Si algo falla, el panel muestra el motivo. El registro completo está en `journalctl -u umbral-disco`.
+
+## 2. Alternativa: prepararlo a mano
+
+Solo si prefieres hacerlo tú, o si el disco no es USB.
+
+1. Identifica el disco: `lsblk -o NAME,SIZE,MODEL,FSTYPE,MOUNTPOINT`. **Asegúrate de que no es el disco del sistema** (el que tiene montado `/`).
+2. Formatéalo (cambia `sdX` por su nombre):
 
    ```sh
-   lsblk -o NAME,SIZE,MODEL,FSTYPE,MOUNTPOINT
-   ```
-
-   Anota su nombre, por ejemplo `sdb`. **Asegúrate de que no es el disco del sistema** (el que tiene montado `/`) ni el de los datos.
-
-2. Créale una partición y dale formato ext4. Cambia `sdX` por el nombre que anotaste:
-
-   ```sh
-   sudo apt install parted
    sudo wipefs -a /dev/sdX
-   sudo parted -s /dev/sdX mklabel gpt mkpart copias ext4 0% 100%
+   printf 'label: gpt\n,,L\n' | sudo sfdisk /dev/sdX
    sudo mkfs.ext4 -L copias /dev/sdX1
    ```
 
-3. Haz que se monte solo en cada arranque. Con `nofail`, el servidor arranca igual aunque el disco esté desconectado:
+3. Que se monte en cada arranque:
 
    ```sh
    sudo mkdir -p /mnt/copias
    echo 'LABEL=copias /mnt/copias ext4 defaults,nofail,x-systemd.device-timeout=10s 0 2' | sudo tee -a /etc/fstab
-   sudo systemctl daemon-reload
-   sudo mount /mnt/copias
+   sudo systemctl daemon-reload && sudo mount /mnt/copias
+   sudo mkdir -p /mnt/copias/umbral && sudo chown umbral: /mnt/copias/umbral
    ```
 
-4. Crea la carpeta de Umbral y dale permiso:
+4. En **Servidor › Copias de seguridad › Disco externo › Usar otra carpeta (avanzado)**, escribe `/mnt/copias/umbral` y pulsa **Guardar carpeta**.
 
-   ```sh
-   sudo mkdir -p /mnt/copias/umbral
-   sudo chown umbral: /mnt/copias/umbral
-   ```
-
-5. Comprueba que está montado: `df -h /mnt/copias` debe mostrar el tamaño del disco externo.
-
-## 2. Configurarlo en Umbral
-
-1. Ve a **Servidor › Copias de seguridad › Disco externo**.
-2. Escribe `/mnt/copias/umbral` y pulsa **Guardar carpeta**.
-3. Umbral comprueba que existe, que puede escribir, que está en otro disco y cuánto espacio libre hay. Si algo falla, te dice qué orden ejecutar.
-4. Elige cuántas copias guardar (por defecto 7) y si quieres el modo de mantenimiento durante la copia:
-   - **Sin mantenimiento**, la opción por defecto: Nextcloud sigue disponible. Un archivo que alguien suba justo en ese momento puede quedar para la copia siguiente.
-   - **Con mantenimiento**: la copia es exacta, pero nadie puede usar Nextcloud mientras dura.
+**En ambos casos**, elige después cuántas copias guardar (por defecto 7) y si quieres el modo de mantenimiento durante la copia:
+- **Sin mantenimiento**, la opción por defecto: Nextcloud sigue disponible. Un archivo que alguien suba justo en ese momento puede quedar para la copia siguiente.
+- **Con mantenimiento**: la copia es exacta, pero nadie puede usar Nextcloud mientras dura.
 
 ## 3. Primera copia
 
-1. Pulsa **Hacer copia completa ahora**. Verás los pasos:
+1. Pulsa **Hacer copia completa ahora** y escribe el código de tu app de autenticación. Verás los pasos:
    1. comprobar el disco;
    2. copia de la base de datos;
    3. llevarla al disco externo;
@@ -92,7 +92,8 @@ Guía para dejar Nextcloud protegido con copias en un disco externo y para resta
 1. Configura antes los avisos en **Ajustes › Avisos**, para enterarte si una copia falla.
 2. En **Automatizaciones › Plantillas**, elige **«Copia nocturna de Nextcloud»**:
    - cada día a las 3:00 hace la copia completa (base de datos y archivos);
-   - lleva marcada **«Avisarme al móvil si falla»**.
+   - lleva marcada **«Avisarme al móvil si falla»**;
+   - no pide código: la automatización la creaste tú con la sesión iniciada.
 3. Ajusta la hora si quieres y guárdala.
 
 ## 5. Comprobar de vez en cuando

@@ -1,37 +1,17 @@
 import { useEffect } from 'react';
 import type { Derived } from '../../state/derive';
 import { loadHistory, nav, set, useStore } from '../../state/store';
-import { Badge, Icon, LinkBtn, Panel, act, dur, fmt, gib, glyphPath, st, type IconName, type StateInfo } from '../../design/ui';
+import { Badge, Icon, LinkBtn, Panel, act, dur, fmt, gib, glyphPath, st, type IconName } from '../../design/ui';
 import { openUrl, pcActions } from '../../state/actions';
 import { openWizard } from '../servicios/Wizard';
 import { sparkPath } from '../servidor/charts';
-
-interface Node { name: string; sub: string; icon: IconName; badge: StateInfo; go: () => void; dim?: boolean; style?: React.CSSProperties }
-
-function TopoNode({ n }: { n: Node }) {
-  return (
-    <button className={'node' + (n.dim ? ' is-off' : '')} style={n.style} onClick={n.go}>
-      <span className="ico-box"><Icon name={n.icon} /></span>
-      <span style={{ minWidth: 0 }}><span className="node-t">{n.name}</span><span className="node-s">{n.sub}</span><Badge s={n.badge} /></span>
-    </button>
-  );
-}
+import { Ecosistema } from './Ecosistema';
 
 export function Inicio({ d }: { d: Derived }) {
   const s = useStore();
   const x = d.s;
   useEffect(() => { void loadHistory('24h'); }, [s.lastOk]);
   const tone = ({ ok: ['check', 't-ok'], warn: ['alert', 't-warn'], err: ['x', 't-err'] } as const)[d.level];
-
-  const gw = x.network.devices.find((v) => v.ip === x.network.gateway);
-  const nodes = {
-    internet: { name: 'Internet', sub: 'Conexión del hogar', icon: 'globe', badge: !d.srvOn || x.internet == null ? st('unknown') : x.internet ? st('connected', 'Conectada') : st('offline', 'Sin conexión'), go: () => nav('network') } as Node,
-    router: { name: 'Router', sub: x.network.gateway || 'Puerta de enlace', icon: 'router', badge: !d.srvOn || !gw ? st('unknown') : gw.online ? st('appOk') : st('noReply'), go: () => set({ drawer: { type: 'device', id: 'router' } }) } as Node,
-    server: { name: 'Servidor', sub: d.srvOn ? (x.docker.available ? d.running + ' de ' + d.ctrs.length + ' servicios activos' : 'Docker sin respuesta') : 'Último dato a las ' + d.lastKnown, icon: 'server', badge: st(d.srvOn ? 'online' : 'offline'), go: () => nav('server') } as Node,
-    nc: { name: 'Nextcloud', sub: d.ncUrl.replace(/^https?:\/\//, '') || 'Sin dirección', icon: 'cloud', badge: d.ncState, go: () => nav('services'), dim: d.srvOn && !!d.nc && d.nc.state !== 'running' } as Node,
-    pc: { name: x.pc.name || 'PC de escritorio', sub: x.pc.ip || 'Sin configurar', icon: 'monitor', badge: d.pcState === 'notConfigured' ? st('notConfigured') : st(d.pcState), go: () => set({ drawer: { type: 'device', id: 'pc' } }), dim: d.pcState !== 'on' } as Node,
-  };
-  const link = (on: boolean) => 'tl' + (on ? '' : ' dash');
 
   const m = x.metrics;
   const h = s.hist['24h'];
@@ -57,19 +37,7 @@ export function Inicio({ d }: { d: Derived }) {
         <div><h2>{d.title}</h2><p>{d.detail}</p></div>
       </section>
 
-      <Panel title="Tu ecosistema" id="map-h" hint="Selecciona un elemento para ver sus detalles">
-        <div className="topo">
-          <TopoNode n={{ ...nodes.internet, style: { gridColumn: 1, gridRow: 1 } }} />
-          <div className={link(d.srvOn && x.internet === true)} style={{ gridColumn: 2, gridRow: 1 }} aria-hidden="true" />
-          <TopoNode n={{ ...nodes.router, style: { gridColumn: 3, gridRow: 1 } }} />
-          <div className={link(d.srvOn)} style={{ gridColumn: 4, gridRow: 1 }} aria-hidden="true" />
-          <TopoNode n={{ ...nodes.server, style: { gridColumn: 5, gridRow: 1 } }} />
-          {d.hasNC && <div className={link(d.ncUsable)} style={{ gridColumn: 6, gridRow: 1 }} aria-hidden="true" />}
-          {d.hasNC && <TopoNode n={{ ...nodes.nc, style: { gridColumn: 7, gridRow: 1 } }} />}
-          <div className={'tl-l' + (d.pcState === 'on' ? '' : ' dash')} aria-hidden="true"><div /></div>
-          <TopoNode n={{ ...nodes.pc, style: { gridColumn: 5, gridRow: 3 } }} />
-        </div>
-      </Panel>
+      <Ecosistema d={d} />
 
       <div className="home-grid">
         <div className="col">
@@ -143,9 +111,9 @@ export function Inicio({ d }: { d: Derived }) {
               <div className="lrow">
                 <button className="name-btn grow" onClick={() => set({ drawer: { type: 'device', id: 'pc' } })}>
                   <span className="ico-box"><Icon name="monitor" /></span>
-                  <span style={{ minWidth: 0 }}><span className="nb-t strong">{x.pc.name || 'PC de escritorio'}</span><span className="sub">{d.pcState === 'notConfigured' ? 'Añade su IP y MAC en Ajustes' : d.pcState === 'on' ? 'Visto ahora' : d.pcState === 'unknown' ? 'Estado desconocido' : 'Visto por última vez ' + (x.pc.lastSeen ? agoLower(x.pc.lastSeen) : 'hace tiempo')}</span></span>
+                  <span style={{ minWidth: 0 }}><span className="nb-t strong">{x.pc.name || 'PC de escritorio'}</span><span className="sub">{d.pcState === 'notConfigured' ? 'Añade su MAC en Ajustes' : d.pcState === 'on' ? 'Visto ahora' : d.pcState === 'unknown' ? 'Estado desconocido' : 'Visto por última vez ' + (x.pc.lastSeen ? agoLower(x.pc.lastSeen) : 'hace tiempo')}</span></span>
                 </button>
-                <Badge s={nodes.pc.badge} />
+                <Badge s={d.pcState === 'notConfigured' ? st('notConfigured') : st(d.pcState)} />
               </div>
             </div>
           </Panel>

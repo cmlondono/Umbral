@@ -326,7 +326,7 @@ func (e *Engine) validate(r *Rule) error {
 		if t.Event != "on" && t.Event != "off" {
 			return errors.New("Elige si es al encenderse o al apagarse el PC.")
 		}
-		if e.a.Cfg.Get().PC.IP == "" {
+		if e.a.Cfg.Get().PC.MAC == "" {
 			return errors.New("Primero configura el PC en Ajustes › Dispositivos registrados.")
 		}
 	case "hook":
@@ -900,7 +900,6 @@ func (e *Engine) step(ctx context.Context, r Rule, s Step) (string, error) {
 		if !s.WaitOn {
 			return "Paquete de encendido enviado.", nil
 		}
-		pc := a.Cfg.Get().PC
 		t0 := time.Now()
 		for time.Since(t0) < 3*time.Minute {
 			select {
@@ -908,8 +907,7 @@ func (e *Engine) step(ctx context.Context, r Rule, s Step) (string, error) {
 				return "", ctx.Err()
 			case <-time.After(10 * time.Second):
 			}
-			if Reachable(pc.IP, pc.CheckPort, 1500*time.Millisecond) {
-				a.Refresh("pc")
+			if a.pcOn() {
 				return "El PC respondió a los " + time.Since(t0).Round(time.Second).String() + ".", nil
 			}
 		}

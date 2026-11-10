@@ -7,6 +7,8 @@
 //	umbral usuario quitar-2fa <nombre>    quita el doble factor (si se perdió el móvil)
 //	umbral sistema                        tareas de root: salud de discos y lista de paquetes
 //	                                      (lo lanza systemd con umbral-sistema.service)
+//	umbral disco                          tarea de root: preparar el disco de copias pedido
+//	                                      desde el panel (umbral-disco.service)
 //
 // Opción común: -datos /var/lib/umbral (carpeta de configuración y estado).
 package main
@@ -64,6 +66,11 @@ func main() {
 		}
 	case "sistema":
 		if err := core.RunSystemHelper(core.HelperDir); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+	case "disco":
+		if err := core.RunDiskHelper(*dataDir, core.HelperDir); err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			os.Exit(1)
 		}

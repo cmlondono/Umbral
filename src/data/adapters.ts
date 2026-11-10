@@ -28,6 +28,7 @@ export interface Adapter {
   dockerDisk(): Promise<DockerDisk>;
   accessLog(): Promise<AccessEvent[]>;
   systemCheck(): Promise<Snapshot>;
+  setPeakThreshold(pct: number): Promise<Snapshot>;
   testRouter(c: RouterConfig, password?: string): Promise<RouterInfo>;
   saveRouter(c: RouterConfig, password?: string): Promise<Snapshot>;
   routerOp(op: 'block' | 'unblock' | 'reboot', mac?: string): Promise<Snapshot>;
@@ -45,7 +46,8 @@ export interface Adapter {
   checkUpdates(): Promise<Snapshot>;
   applyUpdate(name: string): Promise<Job>;
   applyMajor(name: string): Promise<Job>;
-  backupNextcloud(): Promise<Job>;
+  backupNextcloud(code: string): Promise<Job>;
+  prepareDisk(p: { action: 'usar' | 'formatear'; disk: string; serial: string; size: number; code: string }): Promise<Job>;
   revertUpdate(name: string): Promise<Job>;
 
   wakePc(): Promise<Snapshot>;
@@ -122,6 +124,7 @@ export const httpAdapter: Adapter = {
   dockerDisk: () => call('GET', '/api/docker/disk'),
   accessLog: () => call('GET', '/api/access'),
   systemCheck: () => call('POST', '/api/system/check', {}),
+  setPeakThreshold: (pct) => call('PUT', '/api/cpu/threshold', { pct }),
   testRouter: (c, password) => call('POST', '/api/router/test', { ...c, ...(password !== undefined ? { password } : {}) }),
   saveRouter: (c, password) => call('PUT', '/api/router', { ...c, ...(password !== undefined ? { password } : {}) }),
   routerOp: (op, mac) => call('POST', '/api/router/' + op, { mac: mac || '', confirm: true }),
@@ -139,7 +142,8 @@ export const httpAdapter: Adapter = {
   checkUpdates: () => call('POST', '/api/updates/check', {}),
   applyUpdate: (name) => call('POST', `/api/updates/${encodeURIComponent(name)}/apply`, confirm),
   applyMajor: (name) => call('POST', `/api/updates/${encodeURIComponent(name)}/major`, confirm),
-  backupNextcloud: () => call('POST', '/api/backups/nextcloud', {}),
+  backupNextcloud: (code) => call('POST', '/api/backups/nextcloud', { code }),
+  prepareDisk: (p) => call('POST', '/api/disks/prepare', { ...p, ...confirm }),
   revertUpdate: (name) => call('POST', `/api/updates/${encodeURIComponent(name)}/revert`, confirm),
 
   wakePc: () => call('POST', '/api/pc/wake', {}),

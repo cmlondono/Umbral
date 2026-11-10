@@ -179,7 +179,7 @@ export interface HookURLs { local?: string; tailscale?: string }
 
 export interface Job {
   id: string;
-  kind: 'pull' | 'deploy' | 'update' | 'revert';
+  kind: 'pull' | 'deploy' | 'update' | 'revert' | 'disk';
   target: string;
   state: 'running' | 'done' | 'error';
   progress: number;
@@ -227,7 +227,15 @@ export interface Snapshot {
   incidents: Incident[];
   system: SystemState;
   router: RouterState;
+  cpu: CPUView;
 }
+
+/** Un programa o grupo de procesos con el mismo nombre y origen. cpu es el % del equipo entero. */
+export interface ProcUse { name: string; group: string; kind: 'container' | 'service' | 'user' | 'kernel' | 'system'; cpu: number; memMB: number; count: number }
+export interface CPUSplit { user: number; system: number; iowait: number; steal: number }
+export interface CPUNow { at: string; total: number; split: CPUSplit; procs: ProcUse[]; tasks: number }
+export interface CPUPeak { from: string; to: string; open: boolean; max: number; avg: number; split: CPUSplit; top: ProcUse[] | null; n: number }
+export interface CPUView { now: CPUNow | null; peaks: CPUPeak[]; threshold: number; error: string }
 
 export interface RouterConfig { kind: '' | 'openwrt' | 'mikrotik'; url: string; user: string; insecure: boolean }
 export interface RouterInfo { model: string; firmware: string; uptimeSec: number; hostname: string }
@@ -246,7 +254,10 @@ export interface SystemState {
 export interface BackupFile { name: string; db: string; sizeKB: number; at: string; copied: boolean }
 export interface CopyDirStatus { path: string; ok: boolean; problem: string; freeGB: number; sameDisk: boolean; files: number; lastCopy: string }
 export interface FileSnapshot { name: string; at: string; ok: boolean; error: string; files: number; transferredMB: number; totalMB: number; seconds: number; maintenance: boolean; exists: boolean }
-export interface Backups { files: BackupFile[]; copyDir: CopyDirStatus | null; ncFiles?: FileSnapshot[] }
+export interface DiskPart { name: string; sizeBytes: number; fsType: string; label: string; uuid: string; mount: string }
+/** ready: es el de las copias · mounted: ext4 montado sin usar · ext4: ext4 sin montar · other: otro formato o vacío · busy: Umbral no lo toca. */
+export interface ExtDisk { name: string; model: string; serial: string; sizeBytes: number; parts: DiskPart[]; state: 'ready' | 'mounted' | 'ext4' | 'other' | 'busy'; mount: string; known: boolean; canFormat: boolean; problem: string }
+export interface Backups { files: BackupFile[]; copyDir: CopyDirStatus | null; ncFiles?: FileSnapshot[]; disks?: ExtDisk[]; diskHelper?: boolean }
 
 export interface NotifyView { configured: boolean; server: string; topic: string; hasToken: boolean }
 export interface AvailView { target: string; pct24h: number | null; pct7d: number | null; hours: number; down: string | null }
@@ -258,7 +269,7 @@ export interface ContainerDetails { memLimitMB: number; restart: string; created
 export interface DockerVolume { name: string; sizeMB: number; createdAt: string; stack: string; anonymous: boolean }
 export interface DockerDisk { buildCacheMB: number; unused: DockerVolume[]; volumesMB: number; imagesMB: number }
 
-export interface LivePoint { at: string; cpu: number; rx: number; tx: number; mem: number; temp: number | null }
+export interface LivePoint { at: string; cpu: number; rx: number; tx: number; mem: number; temp: number | null; top: ProcUse[] }
 
 export interface History { range: Range; stepSec: number; times: string[]; cpu: number[]; rx: number[]; tx: number[]; mem: number[]; temp: number[] }
 

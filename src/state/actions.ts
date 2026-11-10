@@ -56,7 +56,7 @@ export async function checkPc() {
   const ok = await run('No se pudo comprobar el PC', () => adapter().checkPc());
   set({ checkingPc: false });
   const pc = get().snap?.pc;
-  if (ok && pc) toast({ tone: pc.state === 'on' ? 'ok' : 'info', title: 'Comprobación hecha', body: pc.state === 'on' ? 'El PC responde en ' + pc.ip + '.' : 'El PC no responde en ' + pc.ip + ': está apagado o el firewall bloquea el puerto de comprobación.' });
+  if (ok && pc) toast({ tone: pc.state === 'on' ? 'ok' : 'info', title: 'Comprobación hecha', body: pc.state === 'on' ? 'El PC responde en ' + pc.ip + '.' : !pc.ip ? 'Aún no se conoce su IP: aparecerá cuando el PC se conecte a la red.' : 'El PC no responde en ' + pc.ip + ': está apagado o su firewall bloquea los puertos de comprobación.' });
 }
 
 export function pcActions(d: Derived) {
@@ -64,7 +64,7 @@ export function pcActions(d: Derived) {
   const pc = d.s.pc;
   const notCfg = !pc.configured;
   const wakeA = notCfg
-    ? act({ label: 'Encender con Wake-on-LAN', icon: 'power', kind: 'setup', note: 'falta la IP y la MAC del PC. Añádelas en Ajustes › Dispositivos registrados.', run: () => needsSetup('Encender con Wake-on-LAN', 'el servidor necesita la IP y la MAC del PC. Puedes elegirlo entre los equipos detectados en la red.', 'settings', { setTab: 'devices' }) })
+    ? act({ label: 'Encender con Wake-on-LAN', icon: 'power', kind: 'setup', note: 'falta la MAC del PC. Añádela en Ajustes › Dispositivos registrados.', run: () => needsSetup('Encender con Wake-on-LAN', 'el servidor necesita la MAC del PC. Puedes elegirlo entre los equipos detectados en la red; la IP no hace falta.', 'settings', { setTab: 'devices' }) })
     : act({ label: 'Encender con Wake-on-LAN', icon: 'power', kind: 'primary', run: () => void wake(),
       blocked: !d.srvOn ? 'No disponible: el paquete de encendido lo envía el servidor, que no responde.' : d.pcState === 'on' ? 'El PC ya está encendido.' : d.pcState === 'waking' ? 'Encendiendo…' : '',
       note: d.srvOn && d.pcState === 'off' ? 'Lo envía ' + d.s.server.hostname + ' por la red local.' : '' });

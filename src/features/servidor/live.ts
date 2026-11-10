@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { History } from '../../data/types';
+import type { History, ProcUse } from '../../data/types';
 import { loadLive } from '../../state/store';
 
 /* Vista «En vivo»: una lectura cada 2 s mientras esté activa y la pestaña
@@ -8,10 +8,13 @@ import { loadLive } from '../../state/store';
 export const LIVE_STEP = 2;
 export const LIVE_POINTS = 150;
 
-const empty = (): History => ({ range: '1h', stepSec: LIVE_STEP, times: [], cpu: [], rx: [], tx: [], mem: [], temp: [] });
+/** Historial en vivo y los programas que más usan el procesador en la última lectura. */
+export type LiveHistory = History & { top: ProcUse[] };
 
-export function useLive(on: boolean): History | null {
-  const [h, setH] = useState<History>(empty);
+const empty = (): LiveHistory => ({ range: '1h', stepSec: LIVE_STEP, times: [], cpu: [], rx: [], tx: [], mem: [], temp: [], top: [] });
+
+export function useLive(on: boolean): LiveHistory | null {
+  const [h, setH] = useState<LiveHistory>(empty);
 
   useEffect(() => {
     if (!on) { setH(empty()); return; }
@@ -23,7 +26,7 @@ export function useLive(on: boolean): History | null {
       busy = false;
       if (stop || !p) return;
       const cut = (a: number[], v: number) => [...a, v].slice(-LIVE_POINTS);
-      setH((x) => ({ ...x, times: [...x.times, p.at].slice(-LIVE_POINTS), cpu: cut(x.cpu, p.cpu), rx: cut(x.rx, p.rx), tx: cut(x.tx, p.tx), mem: cut(x.mem, p.mem), temp: cut(x.temp, p.temp ?? 0) }));
+      setH((x) => ({ ...x, times: [...x.times, p.at].slice(-LIVE_POINTS), cpu: cut(x.cpu, p.cpu), rx: cut(x.rx, p.rx), tx: cut(x.tx, p.tx), mem: cut(x.mem, p.mem), temp: cut(x.temp, p.temp ?? 0), top: p.top || [] }));
     };
     void tick();
     const t = setInterval(() => void tick(), LIVE_STEP * 1000);

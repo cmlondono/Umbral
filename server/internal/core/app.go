@@ -30,6 +30,7 @@ type App struct {
 	Avail     *Avail
 	Sys       *sysMon
 	Router    *Router
+	CPU       *CPUWatch
 
 	mu        sync.RWMutex
 	server    ServerInfo
@@ -47,12 +48,14 @@ type App struct {
 
 	lastViewer time.Time
 	wakeAt     time.Time
+	wakeFollow bool
 	histFile   jsonFile[[]HistoryItem]
 	updFile    jsonFile[UpdatesState]
 	ncFiles    jsonFile[[]FileSnapshot]
 	kick       chan string
 	sampler    Sampler
 	sampMu     sync.Mutex
+	procs      procReader
 	live       liveState
 }
 
@@ -97,7 +100,7 @@ func NewApp(dataDir string) (*App, error) {
 		a.updates.Items = []Update{}
 	}
 	a.Notify, a.AccessLog, a.Avail, a.Sys = newNotifier(dataDir), newAccessLog(dataDir), newAvail(dataDir), newSysMon(dataDir)
-	a.Router = newRouter(dataDir)
+	a.Router, a.CPU = newRouter(dataDir), newCPUWatch(dataDir)
 	a.Engine = newEngine(a, dataDir)
 	a.Engine.migrateOld(dataDir)
 	a.server = ReadServerInfo()
@@ -139,6 +142,7 @@ func (a *App) Run(ctx context.Context) {
 
 	a.sampleNow()
 	a.refreshDocker(ctx, true)
+	a.sampleProcs()
 	go a.refreshSlow()
 	go a.Sys.Refresh(false)
 
@@ -147,9 +151,11 @@ func (a *App) Run(ctx context.Context) {
 		case <-ctx.Done():
 			a.Hist.Save()
 			a.Avail.Save()
+			a.CPU.Save()
 			return
 		case <-tMetrics.C:
 			a.sampleNow()
+			a.sampleProcs()
 			a.Engine.Evaluate()
 		case <-tDocker.C:
 			a.refreshDocker(ctx, a.watching())
@@ -162,6 +168,7 @@ func (a *App) Run(ctx context.Context) {
 		case <-tSave.C:
 			a.Hist.Save()
 			a.Avail.Save()
+			a.CPU.Save()
 		case <-tScan.C:
 			go func() {
 				if err := a.Net.Scan(a.Cfg.Get()); err != nil {
@@ -206,12 +213,14 @@ type LivePoint struct {
 	Tx   float64   `json:"tx"`
 	Mem  float64   `json:"mem"`
 	Temp *float64  `json:"temp"`
+	Top  []ProcUse `json:"top"` // los programas que más usan ahora
 }
 
 type liveState struct {
-	mu   sync.Mutex
-	s    Sampler
-	last LivePoint
+	mu    sync.Mutex
+	s     Sampler
+	procs procReader
+	last  LivePoint
 }
 
 // Live solo lee mientras alguien mira la vista en vivo. Usa su propio
@@ -230,13 +239,17 @@ func (a *App) Live() (LivePoint, error) {
 		if _, err := l.s.Sample(); err != nil {
 			return LivePoint{}, err
 		}
+		_, _, _ = l.procs.read(a.containerName)
 		time.Sleep(300 * time.Millisecond)
 	}
 	m, err := l.s.Sample()
 	if err != nil {
 		return LivePoint{}, err
 	}
-	p := LivePoint{At: time.Now(), CPU: m.CPUPct, Rx: m.Net.RxMbps, Tx: m.Net.TxMbps, Temp: m.TempC}
+	p := LivePoint{At: time.Now(), CPU: m.CPUPct, Rx: m.Net.RxMbps, Tx: m.Net.TxMbps, Temp: m.TempC, Top: []ProcUse{}}
+	if n, ok, _ := l.procs.read(a.containerName); ok {
+		p.Top = n.Procs[:min(len(n.Procs), 8)]
+	}
 	if m.Mem.TotalMB > 0 {
 		p.Mem = round1(float64(m.Mem.UsedMB) * 100 / float64(m.Mem.TotalMB))
 	}
@@ -371,45 +384,6 @@ func (a *App) refreshSlow() {
 	a.Net.SetRouter(cfg, a.Router.Names(), rs.Blocked)
 }
 
-func (a *App) refreshPC() {
-	cfg := a.Cfg.Get().PC
-	st := PCState{Configured: cfg.MAC != "" && cfg.IP != "", Name: cfg.Name, IP: cfg.IP, MAC: cfg.MAC, State: "unknown"}
-	if st.Configured {
-		up := Reachable(cfg.IP, cfg.CheckPort, 1200*time.Millisecond)
-		seen, at := a.Net.Seen(cfg.MAC)
-		a.mu.RLock()
-		wakeAt, prev := a.wakeAt, a.pc
-		a.mu.RUnlock()
-		switch {
-		case up:
-			st.State = "on"
-			now := time.Now()
-			st.LastSeen = &now
-		case !wakeAt.IsZero() && time.Since(wakeAt) < 3*time.Minute:
-			st.State = "waking"
-		default:
-			st.State = "off"
-		}
-		if !up && seen {
-			st.State = "on"
-		}
-		if st.LastSeen == nil {
-			if !at.IsZero() {
-				st.LastSeen = &at
-			} else {
-				st.LastSeen = prev.LastSeen
-			}
-		}
-		if !wakeAt.IsZero() {
-			w := wakeAt
-			st.LastWake = &w
-		}
-	}
-	a.mu.Lock()
-	a.pc = st
-	a.mu.Unlock()
-}
-
 func (a *App) Wake(user, origin string) error {
 	cfg := a.Cfg.Get().PC
 	if cfg.MAC == "" {
@@ -424,6 +398,7 @@ func (a *App) Wake(user, origin string) error {
 	a.wakeAt = time.Now()
 	a.pc.State = "waking"
 	a.mu.Unlock()
+	go a.followWake()
 	return nil
 }
 
@@ -470,6 +445,7 @@ type Snapshot struct {
 	Incidents   []Incident     `json:"incidents"`
 	System      SystemState    `json:"system"`
 	Router      RouterState    `json:"router"`
+	CPU         CPUView        `json:"cpu"`
 }
 
 func (a *App) Snapshot() Snapshot {
@@ -482,12 +458,13 @@ func (a *App) Snapshot() Snapshot {
 	nv := a.Notify.View()
 	sys := a.Sys.State()
 	rt := a.Router.State()
+	cpu := a.CPU.View()
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	s := Snapshot{At: time.Now(), Server: a.server, Metrics: a.metrics, MetricsErr: a.metricErr, Docker: a.docker, Nextcloud: a.nextcloud,
 		PC: a.pc, Tailscale: a.tailscale, Network: netst, Updates: a.updates, Config: a.Cfg.Public(), Jobs: []JobView{}, Automations: rules, Runs: runs, Internet: a.internet, Panel: panelInfo(a.started, a.DataDir, a.Cfg.Get().Listen)}
 	s.History = append([]HistoryItem{}, a.history...)
-	s.Notify, s.Avail, s.Incidents, s.System, s.Router = nv, av, inc, sys, rt
+	s.Notify, s.Avail, s.Incidents, s.System, s.Router, s.CPU = nv, av, inc, sys, rt, cpu
 	for _, j := range a.jobs {
 		s.Jobs = append(s.Jobs, j.copy())
 	}

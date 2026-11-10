@@ -136,3 +136,17 @@ a.btn{text-decoration:none}
 
 /* Abierto como app desde la pantalla de inicio */
 @media (display-mode: standalone){.topbar{padding-top:env(safe-area-inset-top)}}
+
+/* Mapa de la red en Inicio */
+@media (min-width:861px){.topo{grid-template-rows:auto 18px;padding-bottom:0}}
+.tl-v{justify-self:center;align-self:stretch;width:0;border-left:1.5px solid var(--line2)}
+.lan{margin:0 var(--pad) var(--pad);padding:12px;border:1.5px solid var(--line2);border-radius:16px}
+.lan-h{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:0 2px 10px}
+.lan-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px}
+.node-add{border:1.5px dashed var(--line2);background:transparent}
+.node-add:hover{background:var(--fill)}
+.node-add .ico-box{color:var(--accent)}
+.add-list{max-height:min(420px,55dvh);overflow:auto;margin-top:10px;border-top:1px solid var(--line)}
+.add-list .lrow{padding-left:0;padding-right:0}
+@media (max-width:860px){.tl-v{display:none}.lan{margin-top:4px}}
+@media (max-width:640px){.add-list .lrow{flex-wrap:wrap;row-gap:6px}.add-list .lrow .grow{flex:1 1 calc(100% - 60px)}.add-list .lrow .badge{margin-left:48px}.add-list .lrow .btn{margin-left:auto}}

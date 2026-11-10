@@ -3,13 +3,16 @@
  * y nunca entra en la compilación que se instala.
  * Parámetros de la URL para probar estados: ?mantenimiento, ?sinservidor. */
 import { ApiError, type Adapter } from '../adapters';
-import type { CatalogApp, Container, History, Job, Range, Snapshot } from '../types';
+import type { CatalogApp, Container, History, Job, Range, Snapshot, ExtDisk } from '../types';
 
 const q = new URLSearchParams(location.search);
 const now = () => new Date().toISOString();
 const minsAgo = (m: number) => new Date(Date.now() - m * 60000).toISOString();
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let logged = sessionStorage.getItem('umbral.pruebas.sesion') === '1';
+// Doble factor activo salvo con ?sin2fa. En el simulador vale cualquier código de 6 cifras.
+let totpOn = !new URLSearchParams(location.search).has('sin2fa');
+const need2fa = (code: string) => { if (!totpOn) throw new ApiError('Esta acción exige la verificación en dos pasos. Actívala en Ajustes › Seguridad.', 403); if (!/^\d{6}$/.test(code.trim())) throw new ApiError('El código no es correcto.', 403); };
 let calls = 0;
 
 const ctr = (o: Partial<Container> & Pick<Container, 'name' | 'image'>): Container => ({ id: o.name + '0'.repeat(12), state: 'running', status: 'Up 6 days', health: 'none', ports: [], cpuPct: 0.5, memMB: 40, startedAt: null, url: null, compose: null, ...o });
@@ -54,6 +57,39 @@ const snap: Snapshot = {
   runs: [],
   config: { serverName: 'servidor-casa', pc: { name: '', ip: '', mac: '', broadcast: '', checkPort: 3389 }, nextcloud: { url: '', container: 'nextcloud' }, remoteTool: null, sshUser: '', dataRoot: '/srv/umbral', scanMinutes: 5, router: { kind: '', url: '', user: '', insecure: false }, backupCopyDir: '', ncBackupKeep: 7, ncBackupMaint: false },
   jobs: [], internet: true,
+  cpu: {
+    threshold: 70, error: '',
+    now: { at: now(), total: 9.4, split: { user: 6.1, system: 2.9, iowait: 0.6, steal: 0 }, tasks: 214, procs: [
+      { name: 'apache2', group: 'nextcloud', kind: 'container', cpu: 3.2, memMB: 412, count: 9 },
+      { name: 'mariadbd', group: 'nextcloud-db', kind: 'container', cpu: 1.9, memMB: 168, count: 1 },
+      { name: 'dockerd', group: 'docker', kind: 'service', cpu: 1.1, memMB: 96, count: 1 },
+      { name: 'netdata', group: 'netdata', kind: 'container', cpu: 0.9, memMB: 214, count: 6 },
+      { name: 'kworker', group: '', kind: 'kernel', cpu: 0.6, memMB: 0, count: 14 },
+      { name: 'umbral', group: 'umbral', kind: 'service', cpu: 0.3, memMB: 15, count: 1 },
+      { name: 'tailscaled', group: 'tailscaled', kind: 'service', cpu: 0.2, memMB: 38, count: 1 },
+      { name: 'redis-server', group: 'nextcloud-redis', kind: 'container', cpu: 0.1, memMB: 9, count: 1 },
+      { name: 'sshd', group: '', kind: 'user', cpu: 0, memMB: 7, count: 2 },
+      { name: 'systemd', group: '', kind: 'system', cpu: 0, memMB: 12, count: 1 },
+      { name: 'containerd', group: 'containerd', kind: 'service', cpu: 0, memMB: 44, count: 1 },
+    ] },
+    peaks: [
+      { from: minsAgo(38), to: minsAgo(31), open: false, max: 97.4, avg: 88.2, n: 28, split: { user: 79.1, system: 8.4, iowait: 3.2, steal: 0 }, top: [
+        { name: 'php', group: 'nextcloud', kind: 'container', cpu: 71.3, memMB: 380, count: 4 },
+        { name: 'mariadbd', group: 'nextcloud-db', kind: 'container', cpu: 11.8, memMB: 172, count: 1 },
+        { name: 'apache2', group: 'nextcloud', kind: 'container', cpu: 2.4, memMB: 410, count: 9 },
+      ] },
+      { from: minsAgo(9 * 60), to: minsAgo(9 * 60 - 2), open: false, max: 76.0, avg: 74.1, n: 8, split: { user: 22.5, system: 51.6, iowait: 18.0, steal: 0 }, top: [
+        { name: 'unattended-upgr', group: 'unattended-upgrades', kind: 'service', cpu: 38.2, memMB: 95, count: 1 },
+        { name: 'dpkg', group: 'unattended-upgrades', kind: 'service', cpu: 21.0, memMB: 20, count: 2 },
+        { name: 'kworker', group: '', kind: 'kernel', cpu: 9.7, memMB: 0, count: 18 },
+      ] },
+      { from: minsAgo(26 * 60), to: minsAgo(26 * 60 - 14), open: false, max: 91.2, avg: 80.5, n: 56, split: { user: 40.1, system: 38.3, iowait: 12.6, steal: 0 }, top: [
+        { name: 'kswapd0', group: '', kind: 'kernel', cpu: 34.0, memMB: 0, count: 1 },
+        { name: 'rsync', group: 'umbral-copia', kind: 'container', cpu: 29.5, memMB: 60, count: 2 },
+        { name: 'mariadbd', group: 'nextcloud-db', kind: 'container', cpu: 8.1, memMB: 170, count: 1 },
+      ] },
+    ],
+  },
   router: { configured: false, kind: '', connected: false, error: '', info: null, blocked: [], leases: 0, checkedAt: null, hasPassword: false },
   system: {
     helperInstalled: true, requested: null,
@@ -108,6 +144,8 @@ async function guard<T>(fn: () => T): Promise<T> {
 }
 const S = () => snap;
 const memLimits = [0];
+// Disco USB recién conectado, con NTFS de fábrica (?sindisco: ninguno).
+const disks: ExtDisk[] = new URLSearchParams(location.search).has('sindisco') ? [] : [{ name: 'sdb', model: 'WD Elements 25A2', serial: 'WX12A3456789', sizeBytes: 500107862016, parts: [{ name: 'sdb1', sizeBytes: 500105216000, fsType: 'ntfs', label: 'Elements', uuid: '', mount: '' }], state: 'other', mount: '', known: false, canFormat: true, problem: '' }];
 const ncSnaps = [1, 2, 3].map((i) => ({ name: '2026102' + (8 - i) + '-030000', at: minsAgo(i * 1440 - 200), ok: true, error: '', files: 40 + i * 7, transferredMB: 180 + i * 30, totalMB: 212000, seconds: 300 + i * 20, maintenance: false, exists: true }));
 const backupFiles = [0, 1, 2].map((i) => ({ name: 'nextcloud-db-2026102' + (7 - i) + '-030000.sql.gz', db: 'nextcloud-db', sizeKB: 13200 - i * 40, at: minsAgo(i * 1440 + 300), copied: i > 0 }));
 let volumes = [
@@ -142,7 +180,7 @@ const catalog: CatalogApp[] = [
 
 export const fixtureAdapter: Adapter = {
   authStatus: async () => ({ configured: true }),
-  session: async () => { await wait(150); if (!logged) throw new ApiError('Sin sesión', 401); return { user: 'usuario' }; },
+  session: async () => { await wait(150); if (!logged) throw new ApiError('Sin sesión', 401); return { user: 'usuario', totp: totpOn, recoveryLeft: totpOn ? 8 : 0 }; },
   login: async (user, password) => {
     await wait(500);
     if (!user || password.length < 4) throw new ApiError('Usuario o contraseña incorrectos.', 401);
@@ -156,8 +194,8 @@ export const fixtureAdapter: Adapter = {
     return { user: 'usuario' };
   },
   totpBegin: async (p) => { await wait(300); if (p.length < 4) throw new ApiError('La contraseña no es correcta.', 400); return { secret: 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP', uri: 'otpauth://totp/Umbral%20(servidor-casa):usuario?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=Umbral' }; },
-  totpConfirm: async (c) => { await wait(300); if (c.length !== 6) throw new ApiError('El código no coincide.', 400); return { recovery: ['abcd-efgh', 'jkmn-pqrs', 'tuvw-xyz2', '3456-789a', 'bcde-fghj', 'kmnp-qrst', 'uvwx-yz23', '4567-89ab'] }; },
-  totpDisable: async () => { await wait(300); return { ok: true }; },
+  totpConfirm: async (c) => { await wait(300); if (c.length !== 6) throw new ApiError('El código no coincide.', 400); totpOn = true; return { recovery: ['abcd-efgh', 'jkmn-pqrs', 'tuvw-xyz2', '3456-789a', 'bcde-fghj', 'kmnp-qrst', 'uvwx-yz23', '4567-89ab'] }; },
+  totpDisable: async () => { await wait(300); totpOn = false; return { ok: true }; },
   logout: async () => { logged = false; sessionStorage.removeItem('umbral.pruebas.sesion'); },
   state: () => guard(S),
   refresh: () => guard(S),
@@ -166,15 +204,27 @@ export const fixtureAdapter: Adapter = {
   details: () => guard(() => ({ memLimitMB: memLimits[0], restart: 'unless-stopped', createdAt: minsAgo(6 * 1440), mounts: [{ type: 'volume', name: 'nextcloud_html', source: '/var/lib/docker/volumes/nextcloud_html/_data', destination: '/var/www/html' }] })),
   setMemory: (_n, mb) => guard(() => { memLimits[0] = mb; return S(); }),
   applyMajor: (name) => guard(() => { throw new ApiError('En el servidor simulado no se actualiza ' + name + '.', 409); }),
-  backupNextcloud: () => guard(() => { const id = 'nc' + Date.now(); const j: Job = { id, kind: 'ncfiles', target: 'nextcloud', state: 'running', progress: 0, message: '', steps: ['Comprobando el disco externo', 'Copia de la base de datos', 'Copiando la base de datos al disco externo', 'Copiando los archivos de Nextcloud', 'Guardando la instantánea'].map((label) => ({ label, state: 'pending' })), result: null } as unknown as Job; jobs.set(id, j);
+  backupNextcloud: (code) => guard(() => { need2fa(code); const id = 'nc' + Date.now(); const j: Job = { id, kind: 'ncfiles', target: 'nextcloud', state: 'running', progress: 0, message: '', steps: ['Comprobando el disco externo', 'Copia de la base de datos', 'Copiando la base de datos al disco externo', 'Copiando los archivos de Nextcloud', 'Guardando la instantánea'].map((label) => ({ label, state: 'pending' })), result: null } as unknown as Job; jobs.set(id, j);
     let k = 0; const tick = () => { if (k > 0) j.steps[k - 1].state = 'done'; if (k < j.steps.length) { j.steps[k].state = 'running'; k++; setTimeout(tick, 700); } else { j.state = 'done'; j.message = 'Copia completa en el disco externo.'; ncSnaps.unshift({ name: '20261028-120000', at: now(), ok: true, error: '', files: 12, transferredMB: 64, totalMB: 212064, seconds: 4, maintenance: false, exists: true }); } }; tick(); return j; }),
   testRouter: (c, password) => guard(() => { if (!password && !snap.router.hasPassword) throw new ApiError('Falta la contraseña del router.', 502); if (!c.url.startsWith('http')) throw new ApiError('El router no responde en ' + c.url + '.', 502); return { model: c.kind === 'mikrotik' ? 'hAP ax2' : 'GL.iNet GL-MT6000', firmware: c.kind === 'mikrotik' ? 'RouterOS 7.16.1' : 'OpenWrt 24.10.0', uptimeSec: 86400 * 3, hostname: 'router' }; }),
   saveRouter: (c, password) => guard(() => { snap.config.router = c; snap.router = c.kind ? { configured: true, kind: c.kind, connected: true, error: '', info: { model: c.kind === 'mikrotik' ? 'hAP ax2' : 'GL.iNet GL-MT6000', firmware: c.kind === 'mikrotik' ? 'RouterOS 7.16.1' : 'OpenWrt 24.10.0', uptimeSec: 86400 * 3, hostname: 'router' }, blocked: [], leases: 7, checkedAt: now(), hasPassword: password !== undefined ? !!password : snap.router.hasPassword } : { configured: false, kind: '', connected: false, error: '', info: null, blocked: [], leases: 0, checkedAt: null, hasPassword: false }; return S(); }),
   routerOp: (op, mac) => guard(() => { if (op === 'block' && mac) snap.router.blocked = [...snap.router.blocked, mac]; if (op === 'unblock') snap.router.blocked = snap.router.blocked.filter((m) => m !== mac); snap.network.devices = snap.network.devices.map((d) => ({ ...d, blocked: snap.router.blocked.includes(d.mac) })); return S(); }),
   publish: (port, local) => guard(() => { snap.tailscale.serve = [...snap.tailscale.serve.filter((e) => e.port !== port), { port, local, target: 'http://127.0.0.1:' + local, url: 'https://' + snap.tailscale.self!.dnsName + (port === 443 ? '' : ':' + port) }]; return S(); }),
   unpublish: (port) => guard(() => { snap.tailscale.serve = snap.tailscale.serve.filter((e) => e.port !== port); return S(); }),
+  setPeakThreshold: (pct) => guard(() => { snap.cpu.threshold = pct; return S(); }),
   systemCheck: () => guard(() => { snap.system.requested = now(); setTimeout(() => { snap.system.requested = null; if (snap.system.smart) snap.system.smart.at = now(); }, 4000); return S(); }),
-  backups: () => guard(() => ({ ncFiles: ncSnaps, files: backupFiles, copyDir: snap.config.backupCopyDir ? { path: snap.config.backupCopyDir, ok: true, problem: '', freeGB: 412, sameDisk: false, files: backupFiles.filter((b) => b.copied).length, lastCopy: minsAgo(1440) } : null })),
+  prepareDisk: (p) => guard(() => {
+    need2fa(p.code);
+    const d = disks.find((x) => x.name === p.disk);
+    if (!d) throw new ApiError('Ese disco ya no está conectado o ha cambiado. Vuelve a comprobarlo.', 409);
+    const labels = ['Comprobando el disco', ...(p.action === 'formatear' ? ['Borrando el disco y formateándolo en ext4'] : []), 'Montándolo y haciendo que se monte en cada arranque', 'Creando la carpeta de Umbral', 'Guardando la carpeta para las copias'];
+    return startJob('disk', d.name, labels, () => {
+      d.parts = [{ name: d.name + '1', sizeBytes: d.sizeBytes, fsType: 'ext4', label: 'umbral-copias', uuid: '9f2c1d0e-0000', mount: '/mnt/copias' }];
+      d.state = 'ready'; d.mount = '/mnt/copias'; d.known = true; d.canFormat = false; d.problem = '';
+      snap.config.backupCopyDir = '/mnt/copias/umbral';
+    }, 'Listo: las copias se guardarán en /mnt/copias/umbral.');
+  }),
+  backups: () => guard(() => ({ disks, diskHelper: true, ncFiles: ncSnaps, files: backupFiles, copyDir: snap.config.backupCopyDir ? { path: snap.config.backupCopyDir, ok: true, problem: '', freeGB: 412, sameDisk: false, files: backupFiles.filter((b) => b.copied).length, lastCopy: minsAgo(1440) } : null })),
   copyBackups: () => guard(() => { const n = backupFiles.filter((b) => !b.copied).length; backupFiles.forEach((b) => { b.copied = true; }); return { copied: n, files: backupFiles, copyDir: { path: snap.config.backupCopyDir, ok: true, problem: '', freeGB: 411, sameDisk: false, files: backupFiles.length, lastCopy: now() } }; }),
   accessLog: () => guard(() => [
     { at: minsAgo(3), user: 'admin', ip: '192.168.1.34', kind: 'login' as const, agent: 'Safari en iPhone', new: false },
@@ -189,7 +239,8 @@ export const fixtureAdapter: Adapter = {
   dockerDisk: () => guard(() => ({ buildCacheMB: 840, imagesMB: 3100, volumesMB: 2600, unused: volumes })),
   pruneBuildCache: () => guard(() => ({ freedMB: 840 })),
   removeVolume: (name) => guard(() => { volumes = volumes.filter((v) => v.name !== name); return { ok: true }; }),
-  live: () => guard(() => ({ at: new Date().toISOString(), cpu: 6 + Math.random() * 14, rx: 0.5 + Math.random() * 6, tx: 0.2 + Math.random(), mem: 30 + Math.random() * 2, temp: 44 + Math.random() * 5 })),
+  live: () => guard(() => ({ at: new Date().toISOString(), cpu: 6 + Math.random() * 14, rx: 0.5 + Math.random() * 6, tx: 0.2 + Math.random(), mem: 30 + Math.random() * 2, temp: 44 + Math.random() * 5,
+    top: snap.cpu.now!.procs.slice(0, 8).map((p, i) => ({ ...p, cpu: Math.max(0, p.cpu + (Math.random() - 0.5) * (8 - i)) })).sort((a, b) => b.cpu - a.cpu) })),
   catalog: () => guard(() => catalog),
   job: (id) => guard(() => { const j = jobs.get(id); if (!j) throw new ApiError('Esa tarea ya no existe.', 404); return j; }),
   containerAction: (name, action) => guard(() => {
