@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +22,21 @@ type Update struct {
 	Error           *string   `json:"error"`
 	// NextMajor: la etiqueta de la siguiente versión mayor (solo Nextcloud), p. ej. nextcloud:31-apache.
 	NextMajor string `json:"nextMajor,omitempty"`
+	// Behind: el principal usa una imagen distinta de la que tiene su etiqueta.
+	Behind bool `json:"behind,omitempty"`
+	// Siblings: los demás contenedores con la misma imagen y su papel.
+	Siblings []Sibling `json:"siblings,omitempty"`
+	// SameImage: contenedores con el mismo ID de imagen pero otra etiqueta
+	// («nombre (etiqueta)»). Solo informativo: no se recrean.
+	SameImage []string `json:"sameImage,omitempty"`
+	// Linked: contenedores que usan la red, los procesos o la IPC de alguno
+	// del grupo (network_mode: container:…). Se recrean al final para que se
+	// enganchen al contenedor nuevo.
+	Linked []string `json:"linked,omitempty"`
+	// PreviousAlso: la imagen anterior de cada hermano recreado, para revertir.
+	PreviousAlso map[string]string `json:"previousAlso,omitempty"`
+	// Waiting: auxiliares detenidos a la espera de que Nextcloud se recupere.
+	Waiting []string `json:"waiting,omitempty"`
 }
 
 type UpdatesState struct {
@@ -36,8 +53,33 @@ func (a *App) saveUpdates() {
 	_ = a.updFile.Save(u)
 }
 
+// normRef: nextcloud → nextcloud:latest, para comparar referencias.
+func normRef(ref string) string {
+	if strings.Contains(ref, "@") {
+		return ref
+	}
+	repo, tag := splitRef(ref)
+	return repo + ":" + tag
+}
+
+// updatable: los contenedores fijados a un ID o a un digest no se comparan
+// con el registro, y los «-anterior» son restos de una actualización.
+func updatable(c Container) bool {
+	return !strings.HasPrefix(c.Image, "sha256:") && !strings.Contains(c.Image, "@") && !strings.HasSuffix(c.Name, "-anterior")
+}
+
+func joinList(names []string) string {
+	if len(names) < 2 {
+		return strings.Join(names, "")
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " y " + names[len(names)-1]
+}
+
 // CheckUpdates compara el digest local de cada imagen en uso con el del
-// registro. Solo detecta versiones nuevas de la misma etiqueta.
+// registro. Solo detecta versiones nuevas de la misma etiqueta. Los
+// contenedores con la misma etiqueta forman un grupo que se actualiza junto.
+// También detecta los que usan una versión anterior de la imagen que ya tiene
+// su etiqueta (se descargó para otro contenedor o con docker compose pull).
 func (a *App) CheckUpdates() {
 	a.mu.Lock()
 	if a.updates.Checking || !a.docker.Available {
@@ -46,52 +88,91 @@ func (a *App) CheckUpdates() {
 	}
 	a.updates.Checking = true
 	cs := append([]Container{}, a.docker.Containers...)
-	prev := map[string]Update{}
-	for _, u := range a.updates.Items {
-		prev[u.Container] = u
-	}
+	prev := append([]Update{}, a.updates.Items...)
 	a.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	now := time.Now()
 	var items []Update
-	digests := map[string]string{}
+	exists, covered := map[string]bool{}, map[string]bool{}
 	for _, c := range cs {
-		if strings.HasPrefix(c.Image, "sha256:") || strings.Contains(c.Image, "@") || strings.HasSuffix(c.Name, "-anterior") {
+		exists[c.Name] = true
+	}
+	// Una actualización hecha hace menos de 7 días se conserva para poder
+	// revertirla, igual que una con auxiliares a la espera.
+	for _, p := range prev {
+		keep := p.State == "updated" && p.PreviousImageID != nil && now.Sub(p.CheckedAt) < 7*24*time.Hour
+		if !(keep || len(p.Waiting) > 0) || !exists[p.Container] {
 			continue
 		}
-		p := prev[c.Name]
-		// Una actualización hecha hace menos de 7 días se conserva para poder revertirla.
-		if p.State == "updated" && p.PreviousImageID != nil && now.Sub(p.CheckedAt) < 7*24*time.Hour {
-			items = append(items, p)
+		// Solo siguen en él los hermanos recreados o a la espera; los demás
+		// se vuelven a comparar.
+		p.Siblings = slices.DeleteFunc(slices.Clone(p.Siblings), func(s Sibling) bool {
+			_, done := p.PreviousAlso[s.Name]
+			return !done && !slices.Contains(p.Waiting, s.Name)
+		})
+		items = append(items, p)
+		covered[p.Container] = true
+		for n := range p.PreviousAlso {
+			covered[n] = true
+		}
+		for _, n := range p.Waiting {
+			covered[n] = true
+		}
+	}
+	var refs []string
+	groups := map[string][]Container{}
+	for _, c := range cs {
+		if !updatable(c) || covered[c.Name] {
 			continue
 		}
-		ref := c.Image
-		if !strings.Contains(ref, ":") {
-			ref += ":latest"
+		ref := normRef(c.Image)
+		if groups[ref] == nil {
+			refs = append(refs, ref)
 		}
-		remote, ok := digests[ref]
-		if !ok {
-			r, err := RemoteDigest(ctx, ref)
-			if err != nil {
+		groups[ref] = append(groups[ref], c)
+	}
+	for _, ref := range refs {
+		localID, local, err := a.Docker.ImageID(ctx, ref)
+		if err != nil || len(local) == 0 {
+			continue // sin digest del registro: imagen compilada en el servidor
+		}
+		infos, err := a.inspectAll(ctx, groups[ref])
+		if err != nil {
+			continue
+		}
+		remote, err := RemoteDigest(ctx, ref)
+		newer := err == nil && !digestMatches(local, remote)
+		for _, unit := range unitsOf(infos, isNextcloudImage(ref)) {
+			state := ""
+			switch {
+			case newer:
+				state = "available"
+			case slices.ContainsFunc(unit, func(x ctrInfo) bool { return x.image != localID }):
+				state = "behind"
+			default:
 				continue
 			}
-			remote, digests[ref] = r, r
+			items = append(items, a.unitUpdate(ctx, unit, ref, state, localID, now, cs))
 		}
-		_, local, err := a.Docker.ImageID(ctx, ref)
-		if err != nil || len(local) == 0 || digestMatches(local, remote) {
-			continue
-		}
-		items = append(items, Update{Container: c.Name, Image: ref, State: "available", CheckedAt: now})
 	}
 	// Nextcloud con una etiqueta de versión fija (30, 30-apache, 30.0.2-fpm…):
 	// ¿existe ya la siguiente mayor? Basta una petición HEAD al registro.
+	var mrefs []string
+	majors := map[string][]Container{}
 	for _, c := range cs {
-		if !isNextcloudImage(c.Image) || strings.HasSuffix(c.Name, "-anterior") {
+		if !isNextcloudImage(c.Image) || !updatable(c) {
 			continue
 		}
-		next, ok := nextMajorRef(c.Image)
+		ref := normRef(c.Image)
+		if majors[ref] == nil {
+			mrefs = append(mrefs, ref)
+		}
+		majors[ref] = append(majors[ref], c)
+	}
+	for _, ref := range mrefs {
+		next, ok := nextMajorRef(ref)
 		if !ok {
 			continue
 		}
@@ -100,12 +181,22 @@ func (a *App) CheckUpdates() {
 		}
 		found := false
 		for i := range items {
-			if items[i].Container == c.Name {
+			if normRef(items[i].Image) == ref {
 				items[i].NextMajor, found = next, true
 			}
 		}
-		if !found {
-			items = append(items, Update{Container: c.Name, Image: c.Image, State: "major", CheckedAt: now, NextMajor: next})
+		if found {
+			continue
+		}
+		localID, _, _ := a.Docker.ImageID(ctx, ref)
+		infos, err := a.inspectAll(ctx, majors[ref])
+		if err != nil {
+			continue
+		}
+		for _, unit := range unitsOf(infos, true) {
+			u := a.unitUpdate(ctx, unit, ref, "major", localID, now, cs)
+			u.NextMajor = next
+			items = append(items, u)
 		}
 	}
 	if items == nil {
@@ -117,6 +208,31 @@ func (a *App) CheckUpdates() {
 	a.saveUpdates()
 }
 
+// unitUpdate describe una unidad: el principal (unit[0]), sus hermanos con su
+// papel y los contenedores relacionados.
+func (a *App) unitUpdate(ctx context.Context, unit []ctrInfo, ref, state, localID string, now time.Time, cs []Container) Update {
+	p := unit[0]
+	u := Update{Container: p.c.Name, Image: ref, State: state, CheckedAt: now, Behind: p.image != localID}
+	ids := map[string]bool{}
+	var group []Container
+	for i, x := range unit {
+		ids[x.image] = true
+		group = append(group, x.c)
+		if i > 0 {
+			u.Siblings = append(u.Siblings, Sibling{Name: x.c.Name, Role: roleOf(p, x), Project: x.project, OtherProject: x.project != p.project, Behind: x.image != localID})
+		}
+	}
+	for _, c := range cs {
+		if !strings.HasSuffix(c.Name, "-anterior") && normRef(c.Image) != ref && ids[c.ImageID] {
+			u.SameImage = append(u.SameImage, c.Name+" ("+c.Image+")")
+		}
+	}
+	for _, l := range a.linkedTo(ctx, group) {
+		u.Linked = append(u.Linked, l.name)
+	}
+	return u
+}
+
 func (a *App) setUpdate(name string, f func(u *Update)) {
 	a.mu.Lock()
 	for i := range a.updates.Items {
@@ -124,6 +240,14 @@ func (a *App) setUpdate(name string, f func(u *Update)) {
 			f(&a.updates.Items[i])
 		}
 	}
+	a.mu.Unlock()
+	a.saveUpdates()
+}
+
+// dropUpdate quita una entrada que ya no tiene nada pendiente.
+func (a *App) dropUpdate(name string) {
+	a.mu.Lock()
+	a.updates.Items = slices.DeleteFunc(slices.Clone(a.updates.Items), func(u Update) bool { return u.Container == name })
 	a.mu.Unlock()
 	a.saveUpdates()
 }
@@ -147,6 +271,9 @@ func (a *App) clearSolvedUpdateErrors(cs []Container) {
 		if isNextcloudImage(u.Image) && (!nc.Reachable || (nc.Maintenance != nil && *nc.Maintenance)) {
 			continue
 		}
+		if slices.ContainsFunc(u.Siblings, func(s Sibling) bool { return s.State == "failed" }) {
+			continue // el aviso de un hermano que no se pudo recrear se queda hasta la próxima comprobación
+		}
 		solved = append(solved, u.Container)
 	}
 	a.mu.RUnlock()
@@ -158,6 +285,7 @@ func (a *App) clearSolvedUpdateErrors(cs []Container) {
 	}
 }
 
+// findUpdate busca la entrada de un contenedor, sea el principal o un hermano.
 func (a *App) findUpdate(name string) (Update, bool) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -166,150 +294,242 @@ func (a *App) findUpdate(name string) (Update, bool) {
 			return u, true
 		}
 	}
+	for _, u := range a.updates.Items {
+		if slices.ContainsFunc(u.Siblings, func(s Sibling) bool { return s.Name == name }) {
+			return u, true
+		}
+	}
 	return Update{}, false
 }
 
-// ApplyUpdate descarga la versión nueva y recrea el contenedor con la misma
-// configuración y los mismos volúmenes. Funciona igual con contenedores de
-// Docker Compose: no necesita leer su archivo. La imagen anterior se conserva
-// para poder revertir.
-func (a *App) ApplyUpdate(user, name string, toMajor bool) (*Job, error) {
-	u, ok := a.findUpdate(name)
-	img := u.Image
-	switch {
-	case !ok:
-		return nil, errors.New("No hay ninguna actualización pendiente para " + name + ".")
-	case toMajor && u.NextMajor == "":
-		return nil, errors.New("No hay una versión mayor nueva para " + name + ".")
-	case toMajor && u.State == "available":
-		return nil, errors.New("Primero aplica la actualización pendiente de tu versión actual: Nextcloud pide estar al día antes de cambiar de versión mayor.")
-	case toMajor:
-		img = u.NextMajor
-	case u.State != "available":
-		return nil, errors.New("No hay ninguna actualización pendiente para " + name + ".")
-	}
-	prevState := u.State
-	if a.busy("", name) {
-		return nil, errors.New("Ya hay una acción en curso para " + name + ".")
-	}
-	nc := isNextcloudImage(img)
-	steps := []string{"Descargando la versión nueva de " + img, "Comprobando que la versión es compatible"}
-	if nc {
-		steps = append(steps, "Activando el modo de mantenimiento", "Copia de seguridad de la base de datos")
-	}
-	steps = append(steps, "Recreando el contenedor "+name)
-	if nc {
-		steps = append(steps, "Esperando a que Nextcloud termine de actualizarse", "Desactivando el modo de mantenimiento")
-	} else {
-		steps = append(steps, "Comprobando que arranca")
-	}
-	j := a.newJob("update", name, steps...)
-	a.setUpdate(name, func(x *Update) { x.State, x.Error = "updating", nil })
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
-		defer cancel()
-		step := 0
-		next := func() { step++; j.step(step) }
-		fail := func(err error) {
-			e := err.Error()
-			a.setUpdate(name, func(x *Update) { x.State, x.Error = prevState, &e })
-			a.Log(user, name, "Actualización", err, "")
-			j.fail(e)
-			a.Refresh("docker")
-			a.Refresh("slow")
-		}
-		j.step(0)
-		raw, err := a.Docker.Inspect(ctx, name)
-		if err != nil {
-			fail(err)
-			return
-		}
-		var oldImg string
-		_ = json.Unmarshal(raw["Image"], &oldImg)
-		if err := a.Docker.Pull(ctx, img, func(p int, _ string) { j.set(func(j *Job) { j.Progress = p / 3 }) }); err != nil {
-			fail(err)
-			return
-		}
-		next()
-		if err := a.checkMajorJump(ctx, oldImg, img); err != nil {
-			fail(err)
-			return
-		}
-		if !nc {
-			next()
-			if err := a.swapImage(ctx, name, raw, img); err != nil {
-				fail(err)
-				return
-			}
-			next()
-			if err := a.waitRunning(ctx, name); err != nil {
-				fail(err)
-				return
-			}
-			a.setUpdate(name, func(x *Update) {
-				x.State, x.PreviousImageID, x.CheckedAt, x.Image, x.NextMajor = "updated", &oldImg, time.Now(), img, ""
-			})
-			a.Log(user, name, "Actualización", nil, img)
-			a.Refresh("docker")
-			j.finish(name+" ya usa la versión nueva de "+img+".", nil)
-			return
-		}
+func isRunning(raw map[string]json.RawMessage) bool {
+	var st struct{ Running bool }
+	_ = json.Unmarshal(raw["State"], &st)
+	return st.Running
+}
 
-		// Nextcloud: nada se toca hasta tener la base de datos copiada.
-		db, kind := a.findDatabase(raw)
-		if db == "" {
-			fail(errors.New("No encontré el contenedor de la base de datos de Nextcloud en marcha, así que no puedo hacer la copia de seguridad. No se ha tocado nada."))
-			return
+func containerID(raw map[string]json.RawMessage) string {
+	var id string
+	_ = json.Unmarshal(raw["Id"], &id)
+	return id
+}
+
+// swap cambia el contenedor por uno igual con otra imagen y deja el anterior
+// detenido, sin reinicio automático, como <nombre>-anterior hasta que se llame
+// a removeOld. Si algo falla, deja el anterior como estaba.
+func (a *App) swap(ctx context.Context, name string, raw map[string]json.RawMessage, image string, start bool) (string, error) {
+	old := name + "-anterior"
+	_ = a.Docker.ContainerAction(ctx, old, "remove")
+	if err := a.Docker.ContainerAction(ctx, name, "stop"); err != nil && !notModified(err) {
+		return "", err
+	}
+	if err := a.Docker.Rename(ctx, name, old); err != nil {
+		if start {
+			_ = a.Docker.ContainerAction(ctx, name, "start")
 		}
-		next()
-		if _, err := a.occ(ctx, name, "maintenance:mode", "--on"); err != nil {
-			fail(fmt.Errorf("No se pudo activar el modo de mantenimiento, así que no se ha tocado nada: %v", err))
-			return
+		return "", err
+	}
+	// Con restart: always, Docker lo arrancaría al reiniciar el servidor.
+	_ = a.Docker.SetRestartPolicy(ctx, old, map[string]any{"Name": "no"})
+	id, err := a.Docker.Recreate(ctx, raw, name, image)
+	if err == nil && start {
+		err = a.Docker.ContainerAction(ctx, id, "start")
+	}
+	if err != nil {
+		if id != "" {
+			_ = a.Docker.ContainerAction(ctx, id, "stop")
+			_ = a.Docker.ContainerAction(ctx, id, "remove")
 		}
-		maintOff := func() { _, _ = a.occ(context.Background(), name, "maintenance:mode", "--off") }
-		next()
-		backup, err := a.backupDatabase(ctx, db, kind)
+		_ = a.Docker.Rename(ctx, old, name)
+		a.restorePolicy(ctx, name, raw)
+		if start {
+			_ = a.Docker.ContainerAction(ctx, name, "start")
+		}
+		return "", fmt.Errorf("no se pudo crear el contenedor nuevo; se mantiene el anterior: %v", err)
+	}
+	return id, nil
+}
+
+func (a *App) restorePolicy(ctx context.Context, name string, raw map[string]json.RawMessage) {
+	var host struct{ RestartPolicy map[string]any }
+	if json.Unmarshal(raw["HostConfig"], &host) == nil && host.RestartPolicy != nil {
+		_ = a.Docker.SetRestartPolicy(ctx, name, host.RestartPolicy)
+	}
+}
+
+// swapImage recrea un solo contenedor con otra imagen y reconecta los que
+// comparten su red.
+func (a *App) swapImage(ctx context.Context, name string, raw map[string]json.RawMessage, image string) error {
+	a.mu.RLock()
+	var self []Container
+	for _, c := range a.docker.Containers {
+		if c.Name == name {
+			self = append(self, c)
+		}
+	}
+	a.mu.RUnlock()
+	linked := a.linkedTo(ctx, self)
+	a.stopLinked(ctx, linked)
+	id, err := a.swap(ctx, name, raw, image, true)
+	if err != nil {
+		a.startLinked(ctx, linked)
+		return err
+	}
+	done, failed := a.relink(ctx, linked, map[string]string{containerID(raw): id})
+	if len(failed) > 0 {
+		return errors.New(strings.Join(failed, " "))
+	}
+	a.removeOld(ctx, append(done, name))
+	return nil
+}
+
+// restoreOld vuelve al contenedor anterior que swap dejó como <nombre>-anterior.
+func (a *App) restoreOld(ctx context.Context, name string, start bool, raw map[string]json.RawMessage) error {
+	_ = a.Docker.ContainerAction(ctx, name, "stop")
+	if err := a.Docker.ContainerAction(ctx, name, "remove"); err != nil {
+		return err
+	}
+	if err := a.Docker.Rename(ctx, name+"-anterior", name); err != nil {
+		return err
+	}
+	a.restorePolicy(ctx, name, raw)
+	if start {
+		return a.Docker.ContainerAction(ctx, name, "start")
+	}
+	return nil
+}
+
+// removeOld borra los contenedores anteriores. Para revertir basta su imagen,
+// que no se borra: Docker no deja borrar una imagen que use un contenedor.
+func (a *App) removeOld(ctx context.Context, names []string) {
+	for _, n := range names {
+		_ = a.Docker.ContainerAction(ctx, n+"-anterior", "remove")
+	}
+}
+
+/* ---------- Contenedores que comparten la red de otro ---------- */
+
+// linkedCtr: un contenedor con network_mode, pid o ipc «container:…».
+type linkedCtr struct {
+	name    string
+	raw     map[string]json.RawMessage
+	running bool
+}
+
+// linkedTo busca los contenedores que usan la red, los procesos o la IPC de
+// alguno del grupo. Al recrear el grupo quedan enganchados al contenedor
+// anterior, que desaparece, y se quedarían sin red.
+func (a *App) linkedTo(ctx context.Context, group []Container) []linkedCtr {
+	in := map[string]bool{}
+	for _, c := range group {
+		in[c.Name] = true
+	}
+	a.mu.RLock()
+	cs := append([]Container{}, a.docker.Containers...)
+	a.mu.RUnlock()
+	var out []linkedCtr
+	for _, c := range cs {
+		if in[c.Name] || strings.HasSuffix(c.Name, "-anterior") {
+			continue
+		}
+		raw, err := a.Docker.Inspect(ctx, c.ID)
+		if err != nil || !sharesWith(raw, group) {
+			continue
+		}
+		out = append(out, linkedCtr{name: c.Name, raw: raw, running: isRunning(raw)})
+	}
+	return out
+}
+
+var sharedModes = []string{"NetworkMode", "PidMode", "IpcMode"}
+
+func sharesWith(raw map[string]json.RawMessage, group []Container) bool {
+	var host map[string]any
+	_ = json.Unmarshal(raw["HostConfig"], &host)
+	for _, k := range sharedModes {
+		v, _ := host[k].(string)
+		t, ok := strings.CutPrefix(v, "container:")
+		if !ok || t == "" {
+			continue
+		}
+		for _, c := range group {
+			if t == c.Name || (len(t) >= 12 && strings.HasPrefix(c.ID, t)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// retarget cambia «container:<ID anterior>» por el ID nuevo. Las referencias
+// por nombre no cambian: el contenedor nuevo se llama igual.
+func retarget(raw map[string]json.RawMessage, ids map[string]string) map[string]json.RawMessage {
+	var host map[string]any
+	if json.Unmarshal(raw["HostConfig"], &host) != nil || host == nil {
+		return raw
+	}
+	for _, k := range sharedModes {
+		v, _ := host[k].(string)
+		t, ok := strings.CutPrefix(v, "container:")
+		if !ok || len(t) < 12 {
+			continue
+		}
+		for old, nw := range ids {
+			if strings.HasPrefix(old, t) {
+				host[k] = "container:" + nw
+			}
+		}
+	}
+	b, err := json.Marshal(host)
+	if err != nil {
+		return raw
+	}
+	out := maps.Clone(raw)
+	out["HostConfig"] = b
+	return out
+}
+
+func (a *App) stopLinked(ctx context.Context, linked []linkedCtr) {
+	for _, l := range linked {
+		if l.running {
+			_ = a.Docker.ContainerAction(ctx, l.name, "stop")
+		}
+	}
+}
+
+func (a *App) startLinked(ctx context.Context, linked []linkedCtr) {
+	for _, l := range linked {
+		if l.running {
+			_ = a.Docker.ContainerAction(ctx, l.name, "start")
+		}
+	}
+}
+
+// relink recrea los contenedores enganchados al grupo con su misma imagen,
+// apuntando al contenedor nuevo. Solo arranca los que estaban en marcha.
+func (a *App) relink(ctx context.Context, linked []linkedCtr, ids map[string]string) (done, failed []string) {
+	for _, l := range linked {
+		var cfg struct{ Image string }
+		var imgID string
+		_ = json.Unmarshal(l.raw["Config"], &cfg)
+		_ = json.Unmarshal(l.raw["Image"], &imgID)
+		// Con su etiqueta si sigue apuntando a la misma imagen; si no, con el
+		// ID, para no actualizarlo sin pedirlo.
+		image := imgID
+		if id, _, err := a.Docker.ImageID(ctx, cfg.Image); cfg.Image != "" && err == nil && id == imgID {
+			image = cfg.Image
+		}
+		_, err := a.swap(ctx, l.name, retarget(l.raw, ids), image, l.running)
+		if err == nil && l.running {
+			err = a.waitRunning(ctx, l.name)
+		}
 		if err != nil {
-			maintOff()
-			fail(fmt.Errorf("La copia de seguridad de %s falló, así que no se ha actualizado nada y Nextcloud vuelve a funcionar: %v", db, err))
-			return
+			failed = append(failed, "No se pudo reconectar "+l.name+" ("+strings.TrimSuffix(err.Error(), ".")+"): recréalo a mano con docker compose up -d.")
+			continue
 		}
-		a.Log(user, db, "Copia de seguridad", nil, backup)
-		next()
-		if err := a.swapImage(ctx, name, raw, img); err != nil {
-			maintOff()
-			fail(fmt.Errorf("%v. Nextcloud sigue con la versión anterior y vuelve a funcionar.", err))
-			return
-		}
-		next()
-		want := a.Docker.ImageEnv(ctx, img, "NEXTCLOUD_VERSION")
-		if err := a.waitNextcloudUpgrade(ctx, name, want, func(m string) { j.set(func(j *Job) { j.Message = m }) }); err != nil {
-			e := fmt.Errorf("La actualización no terminó bien (%v). Para proteger los datos, Nextcloud se queda en modo de mantenimiento. La copia de la base de datos está en %s. Revisa qué pasó con: docker logs %s", err, backup, name)
-			a.setUpdate(name, func(x *Update) { s := e.Error(); x.State, x.Error, x.PreviousImageID = "updated", &s, &oldImg })
-			a.Log(user, name, "Actualización", e, "")
-			j.fail(e.Error())
-			a.Refresh("docker")
-			a.Refresh("slow")
-			return
-		}
-		next()
-		if _, err := a.occ(ctx, name, "maintenance:mode", "--off"); err != nil {
-			e := fmt.Errorf("Nextcloud ya está actualizado, pero no se pudo desactivar el modo de mantenimiento: %v. Desactívalo con: docker exec -u www-data %s php occ maintenance:mode --off", err, name)
-			a.setUpdate(name, func(x *Update) { s := e.Error(); x.State, x.Error, x.PreviousImageID = "updated", &s, &oldImg })
-			j.fail(e.Error())
-			a.Refresh("slow")
-			return
-		}
-		st, _ := a.ncStatus(ctx, name)
-		a.setUpdate(name, func(x *Update) {
-			x.State, x.PreviousImageID, x.CheckedAt, x.Image, x.NextMajor = "updated", &oldImg, time.Now(), img, ""
-		})
-		a.Log(user, name, "Actualización", nil, "Nextcloud "+st.VersionString+". Copia previa: "+backup)
-		a.Refresh("docker")
-		a.Refresh("slow")
-		j.finish("Nextcloud ya está en la versión "+st.VersionString+" y vuelve a funcionar. La copia de la base de datos anterior está en "+backup+".", map[string]string{"backup": backup})
-	}()
-	return j, nil
+		done = append(done, l.name)
+	}
+	return done, failed
 }
 
 // checkMajorJump evita las actualizaciones que la aplicación no admite. Hoy
@@ -347,39 +567,15 @@ func major(v string) int {
 	return n
 }
 
-// swapImage cambia el contenedor por uno igual con otra imagen. Si algo
-// falla, deja el anterior como estaba.
-func (a *App) swapImage(ctx context.Context, name string, raw map[string]json.RawMessage, image string) error {
-	old := name + "-anterior"
-	_ = a.Docker.ContainerAction(ctx, old, "remove")
-	if err := a.Docker.ContainerAction(ctx, name, "stop"); err != nil {
-		return err
-	}
-	if err := a.Docker.Rename(ctx, name, old); err != nil {
-		_ = a.Docker.ContainerAction(ctx, name, "start")
-		return err
-	}
-	id, err := a.Docker.Recreate(ctx, raw, name, image)
-	if err == nil {
-		err = a.Docker.ContainerAction(ctx, id, "start")
-	}
-	if err != nil {
-		if id != "" {
-			_ = a.Docker.ContainerAction(ctx, id, "stop")
-			_ = a.Docker.ContainerAction(ctx, id, "remove")
-		}
-		_ = a.Docker.Rename(ctx, old, name)
-		_ = a.Docker.ContainerAction(ctx, name, "start")
-		return fmt.Errorf("no se pudo crear el contenedor nuevo; se mantiene el anterior: %v", err)
-	}
-	// El contenedor anterior ya no hace falta: para revertir basta su imagen.
-	_ = a.Docker.ContainerAction(ctx, old, "remove")
-	return nil
-}
+// pollEvery: cada cuánto se mira si un contenedor recreado sigue en marcha.
+var pollEvery = 2 * time.Second
 
+// waitRunning espera a que un contenedor recreado esté sano: con
+// healthcheck, hasta que diga «healthy» (unos 3 minutos como mucho); sin él,
+// en marcha y sin reiniciarse durante unos segundos.
 func (a *App) waitRunning(ctx context.Context, name string) error {
-	for i := 0; i < 10; i++ {
-		time.Sleep(2 * time.Second)
+	for i := 0; i < 90; i++ {
+		time.Sleep(pollEvery)
 		r, err := a.Docker.Inspect(ctx, name)
 		if err != nil {
 			continue
@@ -387,11 +583,21 @@ func (a *App) waitRunning(ctx context.Context, name string) error {
 		var st struct {
 			Running    bool
 			Restarting bool
+			Health     *struct{ Status string }
 		}
 		_ = json.Unmarshal(r["State"], &st)
 		if st.Restarting || !st.Running {
 			if i >= 4 {
-				return errors.New("La versión nueva no arranca. Revierte para volver a la anterior y revisa los registros con docker logs " + name + ".")
+				return errors.New("no arranca; revisa sus registros con docker logs " + name)
+			}
+			continue
+		}
+		if st.Health != nil {
+			switch st.Health.Status {
+			case "healthy":
+				return nil
+			case "unhealthy":
+				return errors.New("arranca, pero su comprobación de salud falla; revisa sus registros con docker logs " + name)
 			}
 			continue
 		}
@@ -399,55 +605,153 @@ func (a *App) waitRunning(ctx context.Context, name string) error {
 			return nil
 		}
 	}
-	return nil
+	return errors.New("su comprobación de salud no termina; revisa sus registros con docker logs " + name)
 }
 
+// RevertUpdate vuelve a la imagen anterior en todo el grupo: primero el
+// principal, con sus auxiliares detenidos, y después cada hermano.
 func (a *App) RevertUpdate(user, name string) (*Job, error) {
 	u, ok := a.findUpdate(name)
 	if !ok || u.State != "updated" || u.PreviousImageID == nil {
 		return nil, errors.New("No hay una versión anterior guardada para " + name + ".")
 	}
-	if a.busy("", name) {
-		return nil, errors.New("Ya hay una acción en curso para " + name + ".")
-	}
-	if strings.HasPrefix(u.Image, "nextcloud") {
+	if isNextcloudImage(u.Image) {
 		return nil, errors.New("Nextcloud no se puede revertir desde el panel: al arrancar la versión nueva ya actualizó su base de datos, y la versión anterior no funcionaría con ella. Para volver atrás hay que restaurar una copia de seguridad.")
 	}
-	j := a.newJob("revert", name, "Volviendo a la versión anterior", "Comprobando que arranca")
-	a.setUpdate(name, func(x *Update) { x.State = "reverting" })
+	a.mu.RLock()
+	var cs []Container
+	for _, c := range a.docker.Containers {
+		if _, also := u.PreviousAlso[c.Name]; c.Name == u.Container || also {
+			cs = append(cs, c)
+		}
+	}
+	a.mu.RUnlock()
+	for _, c := range cs {
+		if a.busy("", c.Name) {
+			return nil, errors.New("Ya hay una acción en curso para " + c.Name + ".")
+		}
+	}
+	ctx0, cancel0 := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel0()
+	infos, err := a.inspectAll(ctx0, cs)
+	if err != nil {
+		return nil, errors.New(upperFirst(err.Error()) + ".")
+	}
+	pi := slices.IndexFunc(infos, func(x ctrInfo) bool { return x.c.Name == u.Container })
+	if pi < 0 {
+		return nil, errors.New("El contenedor " + u.Container + " ya no existe.")
+	}
+	p := infos[pi]
+	others := withFirst(infos, pi)[1:]
+	var names []string
+	for _, x := range others {
+		names = append(names, x.c.Name)
+	}
+	linked := a.linkedTo(ctx0, cs)
+	steps := []string{"Volviendo a la versión anterior de " + p.c.Name, "Comprobando que arranca"}
+	if len(others) > 0 {
+		steps = append(steps, "Volviendo a la versión anterior en "+joinList(names))
+	}
+	if len(linked) > 0 {
+		var ln []string
+		for _, l := range linked {
+			ln = append(ln, l.name)
+		}
+		steps = append(steps, "Reconectando los contenedores que comparten su red: "+joinList(ln))
+	}
+	j := a.newJob("revert", u.Container, steps...)
+	a.setUpdate(u.Container, func(x *Update) { x.State = "reverting" })
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
+		step := 0
+		next := func() { step++; j.step(step) }
 		fail := func(err error) {
 			e := err.Error()
-			a.setUpdate(name, func(x *Update) { x.State, x.Error = "updated", &e })
-			a.Log(user, name, "Reversión", err, "")
+			a.setUpdate(u.Container, func(x *Update) { x.State, x.Error = "updated", &e })
+			a.Log(user, p.c.Name, "Reversión", err, "")
 			j.fail(e)
 			a.Refresh("docker")
 		}
 		j.step(0)
-		if _, _, err := a.Docker.ImageID(ctx, *u.PreviousImageID); err != nil {
+		prev := *u.PreviousImageID
+		if _, _, err := a.Docker.ImageID(ctx, prev); err != nil {
 			fail(errors.New("La imagen anterior ya no está en el servidor (quizá se liberó espacio en Imágenes), así que no se puede revertir."))
 			return
 		}
-		raw, err := a.Docker.Inspect(ctx, name)
+		var aux []ctrInfo
+		for _, x := range others {
+			if roleOf(p, x) == "aux" && x.running {
+				aux = append(aux, x)
+				_ = a.Docker.ContainerAction(ctx, x.c.Name, "stop")
+			}
+		}
+		a.stopLinked(ctx, linked)
+		undo := func() {
+			for _, x := range aux {
+				_ = a.Docker.ContainerAction(context.Background(), x.c.Name, "start")
+			}
+			a.startLinked(context.Background(), linked)
+		}
+		id, err := a.swap(ctx, p.c.Name, p.raw, prev, true)
 		if err != nil {
+			undo()
 			fail(err)
 			return
 		}
-		if err := a.swapImage(ctx, name, raw, *u.PreviousImageID); err != nil {
-			fail(err)
+		next()
+		if err := a.waitRunning(ctx, p.c.Name); err != nil {
+			back := a.restoreOld(ctx, p.c.Name, true, p.raw)
+			undo()
+			if back != nil {
+				fail(fmt.Errorf("La versión anterior de %s no arranca y no se pudo volver a la nueva: %v", p.c.Name, back))
+			} else {
+				fail(fmt.Errorf("La versión anterior de %s %v. Todo el grupo sigue con la nueva.", p.c.Name, err))
+			}
 			return
 		}
-		j.step(1)
-		if err := a.waitRunning(ctx, name); err != nil {
-			fail(err)
-			return
+		a.Log(user, p.c.Name, "Reversión", nil, shortID(p.image)+" → "+shortID(prev))
+		ids := map[string]string{containerID(p.raw): id}
+		done := []string{p.c.Name}
+		var failed []string
+		if len(others) > 0 {
+			next()
+			for _, x := range others {
+				img := u.PreviousAlso[x.c.Name]
+				if _, _, err := a.Docker.ImageID(ctx, img); err != nil {
+					failed = append(failed, x.c.Name+" sigue con la versión nueva: su imagen anterior ya no está en el servidor.")
+					continue
+				}
+				id, err := a.recreateOne(ctx, x, img, x.running)
+				a.Log(user, x.c.Name, "Reversión", err, shortID(x.image)+" → "+shortID(img))
+				if err != nil {
+					failed = append(failed, x.c.Name+" no se pudo revertir ("+strings.TrimSuffix(err.Error(), ".")+") y sigue con la versión nueva.")
+					continue
+				}
+				ids[containerID(x.raw)] = id
+				done = append(done, x.c.Name)
+			}
 		}
-		a.setUpdate(name, func(x *Update) { x.State, x.PreviousImageID, x.Error = "available", nil, nil })
-		a.Log(user, name, "Reversión", nil, "Vuelve a la versión anterior de "+u.Image)
+		if len(linked) > 0 {
+			next()
+			d, f := a.relink(ctx, linked, ids)
+			done, failed = append(done, d...), append(failed, f...)
+		}
+		if len(failed) == 0 {
+			a.removeOld(ctx, done)
+		}
+		var e *string
+		if len(failed) > 0 {
+			s := strings.Join(failed, " ")
+			e = &s
+		}
+		a.setUpdate(u.Container, func(x *Update) { x.State, x.PreviousImageID, x.PreviousAlso, x.Error = "available", nil, nil, e })
 		a.Refresh("docker")
-		j.finish(name+" vuelve a usar la versión anterior.", nil)
+		if e != nil {
+			j.fail(p.c.Name + " vuelve a usar la versión anterior. Pero: " + *e)
+			return
+		}
+		j.finish(p.c.Name+" vuelve a usar la versión anterior.", nil)
 	}()
 	return j, nil
 }

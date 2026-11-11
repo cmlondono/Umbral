@@ -287,7 +287,9 @@ func (a *App) SetMemory(ctx context.Context, user, name string, mb int) error {
 	j.step(0)
 	err = a.swapImage(ctx, name, raw, image)
 	if err == nil {
-		err = a.waitRunning(ctx, name)
+		if err = a.waitRunning(ctx, name); err != nil {
+			err = fmt.Errorf("%s %v.", name, err)
+		}
 	}
 	a.Log(user, name, "Límite de memoria", err, "Sin límite")
 	if err != nil {

@@ -650,7 +650,10 @@ func (a *App) Handler(web fs.FS) http.Handler {
 		writeJSON(w, 202, a.Snapshot())
 	})
 	auth("POST /api/updates/{name}/{action}", func(w http.ResponseWriter, r *http.Request) {
-		var body struct{ Confirm bool }
+		var body struct {
+			Confirm bool
+			Skip    []string // hermanos que el usuario desmarcó
+		}
 		if readJSON(r, &body) != nil || !body.Confirm {
 			fail(w, 400, "Esta acción necesita confirmación.")
 			return
@@ -659,9 +662,13 @@ func (a *App) Handler(web fs.FS) http.Handler {
 		var err error
 		switch r.PathValue("action") {
 		case "apply":
-			j, err = a.ApplyUpdate(userOf(r), r.PathValue("name"), false)
+			j, err = a.ApplyUpdate(userOf(r), r.PathValue("name"), false, body.Skip)
 		case "major":
-			j, err = a.ApplyUpdate(userOf(r), r.PathValue("name"), true)
+			j, err = a.ApplyUpdate(userOf(r), r.PathValue("name"), true, body.Skip)
+		case "align":
+			j, err = a.AlignUpdate(userOf(r), r.PathValue("name"), body.Skip)
+		case "start-aux":
+			j, err = a.StartWaiting(userOf(r), r.PathValue("name"))
 		case "revert":
 			j, err = a.RevertUpdate(userOf(r), r.PathValue("name"))
 		default:

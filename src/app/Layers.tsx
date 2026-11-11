@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { useDialog } from '../design/useDialog';
 import type { Derived } from '../state/derive';
 import { dismiss, get, nav, set, useStore } from '../state/store';
@@ -131,6 +132,8 @@ export function Layers({ d }: { d: Derived | null }) {
   const closeDrawer = () => set({ drawer: null });
   const drawerRef = useDialog(!!drawer && !s.modal && !s.logs, closeDrawer);
   const modalRef = useDialog(!!s.modal, () => set({ modal: null }));
+  const [checked, setChecked] = useState<string[]>([]);
+  useEffect(() => { setChecked(s.modal?.checks?.filter((c) => c.checked).map((c) => c.id) ?? []); }, [s.modal]);
 
   return (
     <>
@@ -181,10 +184,21 @@ export function Layers({ d }: { d: Derived | null }) {
             <div className="modal glass" role="alertdialog" aria-modal="true" aria-labelledby="md-title" aria-describedby="md-body" onClick={(e) => e.stopPropagation()} ref={modalRef}>
               <h2 id="md-title">{s.modal.title}</h2>
               <p id="md-body">{s.modal.body}</p>
+              {s.modal.checks?.length ? (
+                <fieldset className="md-checks">
+                  <legend className="small strong">{s.modal.checksLabel}</legend>
+                  {s.modal.checks.map((c) => (
+                    <label key={c.id} className="md-check">
+                      <input type="checkbox" checked={checked.includes(c.id)} onChange={(e) => setChecked((v) => e.target.checked ? [...v, c.id] : v.filter((x) => x !== c.id))} />
+                      <span><span className="mono">{c.label}</span>{c.note && <span className="sub">{c.note}</span>}</span>
+                    </label>
+                  ))}
+                </fieldset>
+              ) : null}
               <div className="modal-f">
                 {s.modal.secondaryLabel && <button className="btn btn-quiet" onClick={s.modal.onSecondary} style={{ marginRight: 'auto' }}>{s.modal.secondaryLabel}</button>}
                 {!s.modal.noCancel && <button className="btn" onClick={() => set({ modal: null })}>Cancelar</button>}
-                <button className={s.modal.confirmCls || 'btn btn-primary'} onClick={s.modal.onConfirm}>{s.modal.confirmLabel}</button>
+                <button className={s.modal.confirmCls || 'btn btn-primary'} onClick={() => s.modal!.onConfirm(checked)}>{s.modal.confirmLabel}</button>
               </div>
             </div>
           </div>

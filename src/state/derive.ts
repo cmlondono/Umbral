@@ -35,6 +35,7 @@ export interface Derived {
   diskMax: { pct: number; label: string; freeGB: number; mount: string } | null;
   memPct: number;
   updatesAvail: number;
+  updatesBehind: number;
   serverBlocked: string;
 }
 
@@ -91,6 +92,8 @@ export function derive(st0: State): Derived | null {
     .sort((a, b) => b.pct - a.pct)[0] || null;
   const memPct = m ? Math.round((m.mem.usedMB / m.mem.totalMB) * 100) : 0;
   const updatesAvail = s.updates.items.filter((u) => u.state === 'available').length;
+  const updatesBehind = s.updates.items.filter((u) => u.state === 'behind').length;
+  const waiting = s.updates.items.flatMap((u) => u.waiting || []);
 
   const alerts: Alert[] = [];
   if (!srvOn) alerts.push({ sev: 'err', title: 'El servidor no responde desde las ' + lastKnown, detail: 'Lo que ves es el último estado conocido. Comprueba que el servidor tenga corriente y cable de red, y que el servicio umbral esté en marcha.', action: 'Ver servidor', page: 'server' });
@@ -104,6 +107,8 @@ export function derive(st0: State): Derived | null {
   if (srvOn && m?.tempC != null && m.tempC >= 85) alerts.push({ sev: m.tempC >= 95 ? 'err' : 'warn', title: 'El procesador está a ' + Math.round(m.tempC) + ' °C', detail: 'Es más de lo normal. Revisa que el servidor tenga ventilación y que no esté cubierto ni junto a una fuente de calor.', action: 'Ver servidor', page: 'server' });
   if (srvOn && memPct >= 85) alerts.push({ sev: 'warn', title: 'La memoria está al ' + memPct + ' %', detail: 'Revisa qué contenedores consumen más antes de desplegar otro servicio.', action: 'Ver servicios', page: 'services' });
   if (srvOn && updatesAvail) alerts.push({ sev: 'warn', title: updatesAvail === 1 ? 'Hay una actualización de imagen' : 'Hay ' + updatesAvail + ' actualizaciones de imágenes', detail: 'Se ha publicado una versión nueva con la misma etiqueta. Actualizar recrea el contenedor y permite revertir.', action: 'Ver actualizaciones', page: 'services', extra: { svcTab: 'updates' } });
+  if (srvOn && updatesBehind) alerts.push({ sev: 'warn', title: 'Hay contenedores con una versión anterior de su imagen', detail: 'Otro contenedor con la misma imagen ya usa la versión nueva. Alinear los recrea con ella, sin descargar nada.', action: 'Ver actualizaciones', page: 'services', extra: { svcTab: 'updates' } });
+  if (srvOn && waiting.length) alerts.push({ sev: 'warn', title: (waiting.length === 1 ? waiting[0] + ' sigue detenido' : waiting.join(', ') + ' siguen detenidos') + ' tras una actualización', detail: 'Esperan a que Nextcloud se recupere. Cuando salga del modo de mantenimiento, arráncalos desde Actualizaciones.', action: 'Ver actualizaciones', page: 'services', extra: { svcTab: 'updates' } });
   if (srvOn && netdata && netdata.state === 'running') alerts.push({ sev: 'warn', title: 'Netdata usa ' + (netdata.memMB != null ? memLabel(netdata.memMB) : 'memoria') + ' sin que lo consultes', detail: 'Este panel ya muestra CPU, memoria, discos y red. Detenerlo y eliminarlo libera esa memoria para tus despliegues.', action: 'Ver Netdata', page: 'services', drawer: { type: 'service', id: netdata.name } });
   const major = s.updates.items.find((u) => u.nextMajor && u.state !== 'updating');
   if (srvOn && major) alerts.push({ sev: 'warn', title: 'Hay una versión mayor nueva de Nextcloud', detail: major.nextMajor + ' ya está publicada. Pasar a ella con el panel es seguro: copia la base de datos antes y se detiene si algo falla.', action: 'Ver actualizaciones', page: 'services', extra: { svcTab: 'updates' } });
@@ -126,5 +131,5 @@ export function derive(st0: State): Derived | null {
     : 'No llegan datos nuevos del servidor. El estado de los servicios y del PC es desconocido.';
 
   return { s, srvOn, lastKnown, dockerOk, pcState, ctrs, running, nc, ncState, ncAppDetail, ncUsable, ncUrl, hasNC: !!nc || s.nextcloud.configured, alerts, level, title, detail, netdata, tsOk,
-    diskMax: worst, memPct, updatesAvail, serverBlocked: srvOn ? '' : 'No disponible: el servidor no responde.' };
+    diskMax: worst, memPct, updatesAvail, updatesBehind, serverBlocked: srvOn ? '' : 'No disponible: el servidor no responde.' };
 }

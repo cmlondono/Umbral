@@ -13,15 +13,20 @@ export interface Prefs {
   autoRefresh: 'off' | '30s' | '1m' | '5m';
 }
 
+export interface ModalCheck { id: string; label: string; note?: string; checked: boolean }
+
 export interface ModalSpec {
   title: string;
   body: string;
+  /** Casillas opcionales: onConfirm recibe las que quedaron marcadas. */
+  checks?: ModalCheck[];
+  checksLabel?: string;
   confirmLabel: string;
   confirmCls?: string;
   noCancel?: boolean;
   secondaryLabel?: string;
   onSecondary?: () => void;
-  onConfirm: () => void;
+  onConfirm: (checked?: string[]) => void;
 }
 
 export interface Toast { id: string; tone: 'ok' | 'info' | 'warn' | 'err'; title: string; body: string }
@@ -145,8 +150,8 @@ export function needsSetup(title: string, note: string, page: Page, extra: Parti
   } });
 }
 
-export function confirmModal(m: Omit<ModalSpec, 'onConfirm'> & { onConfirm: () => void | Promise<void> }) {
-  set({ modal: { ...m, onConfirm: () => { set({ modal: null }); void m.onConfirm(); } } });
+export function confirmModal(m: Omit<ModalSpec, 'onConfirm'> & { onConfirm: (checked?: string[]) => void | Promise<void> }) {
+  set({ modal: { ...m, onConfirm: (checked) => { set({ modal: null }); void m.onConfirm(checked); } } });
 }
 
 /* ---------- Conexión con el servidor ---------- */

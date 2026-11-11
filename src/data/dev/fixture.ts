@@ -26,11 +26,13 @@ const snap: Snapshot = {
     available: true, error: null, version: '27.3.1',
     containers: [
       ctr({ name: 'nextcloud', image: 'nextcloud:30-apache', ports: ['8080→80/tcp'], cpuPct: 1.8, memMB: 312, url: 'http://192.168.1.10:8080', compose: 'nextcloud' }),
+      ctr({ name: 'nextcloud-cron', image: 'nextcloud:30-apache', cpuPct: 0.1, memMB: 38, compose: 'nextcloud' }),
+      ctr({ name: 'nextcloud-respaldo', image: 'mariadb:11.4', cpuPct: 0, memMB: 12, compose: 'nextcloud' }),
       ctr({ name: 'nextcloud-db', image: 'mariadb:11.4', status: 'Up 6 days (healthy)', health: 'healthy', cpuPct: 0.7, memMB: 168, compose: 'nextcloud' }),
       ctr({ name: 'netdata', image: 'netdata/netdata:stable', ports: ['19999→19999/tcp'], status: 'Up 23 days (healthy)', health: 'healthy', cpuPct: 3.1, memMB: 214, url: 'http://192.168.1.10:19999' }),
     ],
     images: [
-      { id: '3f1c9a2b7d4e', repo: 'nextcloud', tag: '30-apache', sizeMB: 1270, created: minsAgo(15 * 1440), usedBy: ['nextcloud'], exposedPort: 80, volumes: ['/var/www/html'], arch: 'amd64' },
+      { id: '3f1c9a2b7d4e', repo: 'nextcloud', tag: '30-apache', sizeMB: 1270, created: minsAgo(15 * 1440), usedBy: ['nextcloud', 'nextcloud-cron'], exposedPort: 80, volumes: ['/var/www/html'], arch: 'amd64' },
       { id: '9b2e0c41a7f3', repo: 'mariadb', tag: '11.4', sizeMB: 405, created: minsAgo(30 * 1440), usedBy: ['nextcloud-db'], exposedPort: 3306, volumes: ['/var/lib/mysql'], arch: 'amd64' },
       { id: 'a4c39e8d1f27', repo: 'netdata/netdata', tag: 'stable', sizeMB: 640, created: minsAgo(40 * 1440), usedBy: ['netdata'], exposedPort: 19999, volumes: [], arch: 'amd64' },
       { id: '1e8d4c7b2a95', repo: '<none>', tag: '<none>', sizeMB: 1260, created: minsAgo(45 * 1440), usedBy: [], exposedPort: 80, volumes: ['/var/www/html'], arch: 'amd64' },
@@ -49,7 +51,8 @@ const snap: Snapshot = {
     { ip: '192.168.1.57', mac: '44:00:49:9B:31:C7', name: 'echo-dot', custom: '', pinned: false, vendor: '', online: true, firstSeen: minsAgo(9000), lastSeen: now(), registered: null },
     { ip: '192.168.1.73', mac: '5E:22:B0:DA:A1:19', name: '', custom: '', pinned: false, vendor: 'MAC privada (aleatoria)', online: true, firstSeen: minsAgo(47), lastSeen: now(), registered: null },
   ] },
-  updates: { lastCheck: minsAgo(300), checking: false, items: [{ container: 'nextcloud', image: 'nextcloud:30-apache', state: 'available', checkedAt: minsAgo(300), previousImageId: null, error: null, nextMajor: 'nextcloud:31-apache' }] },
+  updates: { lastCheck: minsAgo(300), checking: false, items: [{ container: 'nextcloud', image: 'nextcloud:30-apache', state: 'available', checkedAt: minsAgo(300), previousImageId: null, error: null, nextMajor: 'nextcloud:31-apache', siblings: [{ name: 'nextcloud-cron', role: 'aux', project: 'nextcloud' }] },
+    { container: 'nextcloud-db', image: 'mariadb:11.4', state: 'behind', checkedAt: minsAgo(300), previousImageId: null, error: null, siblings: [{ name: 'nextcloud-respaldo', role: 'aux', project: 'nextcloud', behind: true }] }] },
   history: [{ at: minsAgo(6 * 1440), target: 'nextcloud', action: 'Reinicio', result: 'ok', detail: '', user: 'usuario' }],
   automations: [
     { id: 'r1', name: 'Encender el PC los días laborables', enabled: false, trigger: { kind: 'schedule', days: [1, 2, 3, 4, 5], time: '07:30' }, conditions: [], steps: [{ kind: 'wake', waitOn: true }], cooldownMin: 0, lastRun: null, hasHook: false, armed: 'waiting' },
@@ -260,7 +263,9 @@ export const fixtureAdapter: Adapter = {
     snap.docker.containers.push(ctr({ name: spec.name, image: spec.image || catalog.find((a) => a.id === spec.app)?.image || 'imagen', ports: [spec.port + '→' + spec.cport + '/tcp'], url: 'http://192.168.1.10:' + spec.port }));
   }, spec.name + ' está en marcha y responde en http://192.168.1.10:' + spec.port + '.')),
   checkUpdates: () => guard(S),
-  applyUpdate: (name) => guard(() => { const u = snap.updates.items.find((i) => i.container === name)!; u.state = 'updating'; return startJob('update', name, ['Descargando', 'Recreando', 'Comprobando'], () => { u.state = 'updated'; u.previousImageId = 'sha256:abc'; }, name + ' ya usa la versión nueva.'); }),
+  applyUpdate: (name) => guard(() => { const u = snap.updates.items.find((i) => i.container === name)!; u.state = 'updating'; return startJob('update', name, ['Descargando', 'Deteniendo los auxiliares', 'Recreando', 'Comprobando', 'Recreando los auxiliares'], () => { u.state = 'updated'; u.previousImageId = 'sha256:abc'; u.siblings?.forEach((s) => { s.behind = false; }); }, name + ' ya usa la versión nueva.'); }),
+  alignUpdate: (name) => guard(() => { const u = snap.updates.items.find((i) => i.container === name)!; u.state = 'updating'; return startJob('align', name, ['Comprobando la versión local', 'Recreando los auxiliares'], () => { snap.updates.items = snap.updates.items.filter((i) => i !== u); }, 'Todo el grupo de ' + name + ' usa ya la misma versión.'); }),
+  startAux: (name) => guard(() => { const u = snap.updates.items.find((i) => i.container === name)!; return startJob('aux', name, ['Arrancando los auxiliares'], () => { u.waiting = []; u.siblings?.forEach((s) => { s.state = undefined; s.note = undefined; }); }, 'Los auxiliares vuelven a funcionar.'); }),
   revertUpdate: (name) => guard(() => { const u = snap.updates.items.find((i) => i.container === name)!; u.state = 'reverting'; return startJob('revert', name, ['Volviendo', 'Comprobando'], () => { u.state = 'available'; u.previousImageId = null; }, name + ' vuelve a usar la versión anterior.'); }),
   wakePc: () => guard(() => { snap.pc.state = 'waking'; snap.pc.lastWake = now(); setTimeout(() => { snap.pc.state = 'on'; snap.pc.lastSeen = now(); }, 5000); return snap; }),
   checkPc: () => guard(S),

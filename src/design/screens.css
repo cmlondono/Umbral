@@ -122,3 +122,9 @@
 .check-done{color:var(--ok)}
 .check-todo{color:var(--line2)}
 
+.sib-list{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:6px}
+.sib-list li{display:grid;gap:1px;padding-left:10px;border-left:2px solid var(--line)}
+.sib-st{display:inline-flex;gap:5px;align-items:center}
+.sib-st .i{width:13px;height:13px;flex:none}
+.sib-st.warn{color:var(--warn)}
+.sib-st.err{color:var(--err)}

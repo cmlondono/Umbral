@@ -1,4 +1,4 @@
-import type { Image } from '../data/types';
+import type { Image, Sibling, Update } from '../data/types';
 import { act, memLabel, type Action } from '../design/ui';
 import type { CtrView, Derived } from './derive';
 import { adapter, confirmModal, follow, get, nav, needsSetup, run, set, toast } from './store';
@@ -130,24 +130,56 @@ export async function startPull() {
 }
 
 /* ---------- Actualizaciones ---------- */
-export function doUpdate(name: string, image: string, revert: boolean, major?: string) {
-  confirmModal(major
-    ? { title: '¿Pasar Nextcloud a la versión ' + (major.split(':')[1] || major) + '?', body: 'Es un cambio de versión mayor: Nextcloud estará en modo de mantenimiento entre 10 y 30 minutos mientras actualiza su base de datos; avisa a quien lo use. Antes, el panel copiará la base de datos; si la copia falla, no se toca nada. No se puede volver atrás desde el panel. Algunas apps de Nextcloud pueden quedar desactivadas si aún no son compatibles. No reinicies el servidor mientras tanto.', confirmLabel: 'Cambiar de versión', confirmCls: 'btn btn-danger-solid', onConfirm: () => go() }
-    : revert
-    ? { title: '¿Volver a la versión anterior de ' + name + '?', body: 'Se recreará el contenedor con la imagen anterior, que se conservó al actualizar. Estará sin servicio unos segundos.', confirmLabel: 'Revertir', onConfirm: () => go() }
+/** Lista legible: «a, b y c». */
+export function joinNames(n: string[]) { return n.length < 2 ? n.join('') : n.slice(0, -1).join(', ') + ' y ' + n[n.length - 1]; }
+
+/** Papel de un hermano, en palabras: «Independiente, de otro proyecto de Compose (fotos). …». */
+export function siblingText(sb: Sibling) {
+  const where = !sb.otherProject ? '' : sb.project ? ', de otro proyecto de Compose (' + sb.project + ')' : ', sin Docker Compose';
+  return sb.role === 'aux'
+    ? 'Auxiliar' + where + '. Se detiene antes y se recrea después del principal.'
+    : 'Independiente' + where + '. Se recrea al final; si falla, solo se avisa.';
+}
+
+export type UpdKind = 'apply' | 'major' | 'align' | 'revert' | 'aux';
+
+export function doUpdate(it: Update, kind: UpdKind) {
+  const name = it.container, image = it.image, major = it.nextMajor || '';
+  const sibs = (it.siblings || []).filter((sb) => kind !== 'align' || sb.behind);
+  const checks = kind === 'apply' || kind === 'major' || kind === 'align'
+    ? sibs.map((sb) => ({ id: sb.name, label: sb.name, note: siblingText(sb), checked: true })) : undefined;
+  const extras: string[] = [];
+  if (kind === 'revert' && it.previousAlso && Object.keys(it.previousAlso).length) extras.push('También vuelven a la versión anterior: ' + joinNames(Object.keys(it.previousAlso)) + '.');
+  if (it.linked?.length && kind !== 'aux') extras.push('Después se reconecta ' + joinNames(it.linked) + (it.linked.length > 1 ? ', que usan su red.' : ', que usa su red.'));
+  if (it.sameImage?.length && kind !== 'revert' && kind !== 'aux') extras.push('Con el mismo ID de imagen pero otra etiqueta: ' + joinNames(it.sameImage) + '. No se tocan.');
+  const extra = extras.length ? ' ' + extras.join(' ') : '';
+  const base = { checks, checksLabel: kind === 'align' ? 'Usan una versión anterior de la imagen:' : 'Esta imagen también la usan:', onConfirm: (c?: string[]) => go(c) };
+  confirmModal(kind === 'major'
+    ? { ...base, title: '¿Pasar Nextcloud a la versión ' + (major.split(':')[1] || major) + '?', body: 'Es un cambio de versión mayor: Nextcloud estará en modo de mantenimiento entre 10 y 30 minutos mientras actualiza su base de datos; avisa a quien lo use. Antes, el panel copiará la base de datos; si la copia falla, no se toca nada. No se puede volver atrás desde el panel. Algunas apps de Nextcloud pueden quedar desactivadas si aún no son compatibles.' + extra + ' No reinicies el servidor mientras tanto.', confirmLabel: 'Cambiar de versión', confirmCls: 'btn btn-danger-solid' }
+    : kind === 'revert'
+    ? { ...base, title: '¿Volver a la versión anterior de ' + name + '?', body: 'Se recreará el contenedor con la imagen anterior, que se conservó al actualizar. Estará sin servicio unos segundos.' + extra, confirmLabel: 'Revertir' }
+    : kind === 'aux'
+    ? { ...base, title: '¿Arrancar los auxiliares?', body: 'Se recrearán ' + joinNames(it.waiting || []) + ' con la versión nueva de ' + image + ' y se arrancarán. Hazlo solo cuando Nextcloud ya funcione: el servidor lo comprueba antes.', confirmLabel: 'Arrancar auxiliares' }
+    : kind === 'align'
+    ? { ...base, title: '¿Alinear ' + name + '?', body: 'Se recrearán con la versión de ' + image + ' que ya está en el servidor, sin descargar nada, con la misma configuración y los mismos datos. Estarán sin servicio unos segundos.' + extra, confirmLabel: 'Alinear' }
     : image.startsWith('nextcloud')
-      ? { title: '¿Actualizar Nextcloud ahora?', body: 'Nextcloud estará en modo de mantenimiento entre 5 y 15 minutos: avisa a quien lo esté usando, porque una subida en curso se cortará. Antes de tocar nada, el panel copiará la base de datos; si la copia falla, no se actualiza. Tus archivos no se tocan. Si la versión nueva salta más de una versión mayor, se detiene sin cambiar nada. Si algo sale mal después, Nextcloud se queda en mantenimiento para proteger los datos. No reinicies el servidor ni actualices Debian mientras tanto.', confirmLabel: 'Actualizar Nextcloud', confirmCls: 'btn btn-danger-solid', onConfirm: () => go() }
-      : { title: '¿Actualizar ' + name + '?', body: 'Se descargará la versión nueva de ' + image + ' y se recreará el contenedor con la misma configuración y los mismos datos. Estará sin servicio unos segundos. La imagen anterior se conserva para poder revertir. No reinicies el servidor mientras tanto.', confirmLabel: 'Actualizar', onConfirm: () => go() });
-  async function go() {
+      ? { ...base, title: '¿Actualizar Nextcloud ahora?', body: 'Nextcloud estará en modo de mantenimiento entre 5 y 15 minutos: avisa a quien lo esté usando, porque una subida en curso se cortará. Antes de tocar nada, el panel copiará la base de datos; si la copia falla, no se actualiza. Tus archivos no se tocan. Si la versión nueva salta más de una versión mayor, se detiene sin cambiar nada. Si algo sale mal después, Nextcloud se queda en mantenimiento para proteger los datos.' + extra + ' No reinicies el servidor ni actualices Debian mientras tanto.', confirmLabel: 'Actualizar Nextcloud', confirmCls: 'btn btn-danger-solid' }
+      : { ...base, title: '¿Actualizar ' + name + '?', body: 'Se descargará la versión nueva de ' + image + ' y se recreará el contenedor con la misma configuración y los mismos datos. Estará sin servicio unos segundos. La imagen anterior se conserva para poder revertir.' + extra + ' No reinicies el servidor mientras tanto.', confirmLabel: 'Actualizar' });
+  async function go(checked: string[] = []) {
+    const skip = sibs.map((sb) => sb.name).filter((n) => !checked.includes(n));
+    const titles: Record<UpdKind, [string, string]> = { apply: ['Actualización completada', 'No se pudo actualizar'], major: ['Actualización completada', 'No se pudo actualizar'],
+      align: ['Alineación completada', 'No se pudo alinear'], revert: ['Reversión completada', 'No se pudo revertir'], aux: ['Auxiliares en marcha', 'No se pudieron arrancar'] };
     try {
-      const j = await (major ? adapter().applyMajor(name) : revert ? adapter().revertUpdate(name) : adapter().applyUpdate(name));
+      const a = adapter();
+      const j = await (kind === 'major' ? a.applyMajor(name, skip) : kind === 'revert' ? a.revertUpdate(name) : kind === 'align' ? a.alignUpdate(name, skip) : kind === 'aux' ? a.startAux(name) : a.applyUpdate(name, skip));
       set((s) => ({ updJobs: { ...s.updJobs, [name]: j.id } }));
       void load2();
       set((s) => ({ updView: { ...s.updView, [name]: j } }));
       const end = await follow(j.id, (job) => set((s) => ({ updView: { ...s.updView, [name]: job } })));
       set((s) => { const u = { ...s.updJobs }; delete u[name]; const v = { ...s.updView }; delete v[name]; return { updJobs: u, updView: v }; });
-      if (end?.state === 'done') toast({ tone: 'ok', title: revert ? 'Reversión completada' : 'Actualización completada', body: end.message });
-      else if (end) toast({ tone: 'err', title: revert ? 'No se pudo revertir' : 'No se pudo actualizar', body: end.message });
+      void load2();
+      if (end?.state === 'done') toast({ tone: 'ok', title: titles[kind][0], body: end.message });
+      else if (end) toast({ tone: 'err', title: titles[kind][1], body: end.message });
     } catch (e) {
       toast({ tone: 'err', title: 'No se pudo empezar', body: e instanceof Error ? e.message : String(e) });
     }

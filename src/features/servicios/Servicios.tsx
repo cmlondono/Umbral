@@ -4,7 +4,7 @@ import { ActButton, Badge, Empty, Icon, Panel, Search, Seg, act, agoIso, fmt, me
 import { usePaged } from '../../design/Pager';
 import { DockerSpace } from './DockerSpace';
 import { Disponibilidad } from './Disponibilidad';
-import { doUpdate, openUrl, removeImages } from '../../state/actions';
+import { doUpdate, joinNames, openUrl, removeImages, siblingText } from '../../state/actions';
 import { imgBadge } from '../../app/Layers';
 import { openWizard, openWizardForImage } from './Wizard';
 
@@ -16,7 +16,7 @@ export function Servicios({ d }: { d: Derived }) {
       <div>
         <Seg role="tablist" label="Apartados de servicios" value={s.svcTab} onChange={(v) => set({ svcTab: v })}
           options={[['containers', 'Contenedores'], ['images', 'Imágenes'], ['updates', 'Actualizaciones'], ['avail', 'Disponibilidad']]}
-          counts={{ containers: d.ctrs.length, images: imgs.length, updates: d.updatesAvail }} />
+          counts={{ containers: d.ctrs.length, images: imgs.length, updates: d.updatesAvail + d.updatesBehind }} />
       </div>
       {!d.s.docker.available && d.srvOn && (
         <div className="banner err" role="status"><Icon name="x" /><div><b>Docker no responde</b><span>{d.s.docker.error}</span></div></div>
@@ -182,7 +182,7 @@ function Actualizaciones({ d }: { d: Derived }) {
   const u = d.s.updates;
   const hist = usePaged(d.s.history, 'historial');
   const blocked = d.serverBlocked;
-  const hint = !d.srvOn ? 'Último dato a las ' + d.lastKnown : u.checking ? 'Buscando…' : d.updatesAvail ? (d.updatesAvail === 1 ? '1 disponible' : d.updatesAvail + ' disponibles') : 'Todo al día';
+  const hint = !d.srvOn ? 'Último dato a las ' + d.lastKnown : u.checking ? 'Buscando…' : d.updatesAvail || d.updatesBehind ? [d.updatesAvail ? (d.updatesAvail === 1 ? '1 disponible' : d.updatesAvail + ' disponibles') : '', d.updatesBehind ? d.updatesBehind + ' por alinear' : ''].filter(Boolean).join(' · ') : 'Todo al día';
   return (
     <>
       <Panel title="Actualizaciones de imágenes" id="up-h" hint={<span className="hint" style={{ display: 'block' }}>{hint}</span>}
@@ -194,21 +194,45 @@ function Actualizaciones({ d }: { d: Derived }) {
           <div>
             {u.items.map((it) => {
               const jobRunning = !!s.updJobs[it.container] || it.state === 'updating' || it.state === 'reverting';
+              const busy = jobRunning ? 'Hay una acción en curso.' : '';
               const ctrCompose = d.s.docker.containers.find((c) => c.name === it.container)?.compose;
+              const isNc = it.image.startsWith('nextcloud');
               const majorTag = it.nextMajor ? it.nextMajor.split(':')[1] || it.nextMajor : '';
-              const majorAct = it.nextMajor ? act({ label: jobRunning ? 'Actualizando…' : 'Pasar a la ' + majorTag, icon: 'download', kind: it.state === 'major' ? 'primary' : undefined, spin: jobRunning && it.state === 'major', run: () => doUpdate(it.container, it.image, false, it.nextMajor), blocked: blocked || (jobRunning ? 'Hay una acción en curso.' : '') || (it.state === 'available' ? 'Primero aplica la actualización pendiente de tu versión actual.' : '') }) : null;
-              const badge = it.state === 'major' ? st('update', 'Versión mayor nueva') : it.state === 'updating' ? st('restarting', 'Actualizando…') : it.state === 'reverting' ? st('restarting', 'Revirtiendo…') : it.state === 'updated' ? st('ok', 'Actualizada') : it.image.startsWith('nextcloud') ? st('warn', 'Versión nueva') : st('update');
+              const majorAct = it.nextMajor ? act({ label: jobRunning ? 'Actualizando…' : 'Pasar a la ' + majorTag, icon: 'download', kind: it.state === 'major' ? 'primary' : undefined, spin: jobRunning && it.state === 'major', run: () => doUpdate(it, 'major'), blocked: blocked || busy || (it.state === 'available' ? 'Primero aplica la actualización pendiente de tu versión actual.' : '') || (it.waiting?.length ? 'Primero arranca los auxiliares detenidos.' : '') }) : null;
+              const badge = it.state === 'major' ? st('update', 'Versión mayor nueva') : it.state === 'updating' ? st('restarting', 'Actualizando…') : it.state === 'reverting' ? st('restarting', 'Revirtiendo…') : it.state === 'updated' ? st('ok', 'Actualizada') : it.state === 'behind' ? st('warn', 'Versión anterior') : isNc ? st('warn', 'Versión nueva') : st('update');
               const a = it.state === 'major' ? majorAct! : it.state === 'updated'
-                ? act({ label: 'Revertir', icon: 'restart', run: () => doUpdate(it.container, it.image, true), blocked: blocked || (jobRunning ? 'Hay una acción en curso.' : '') || (it.image.startsWith('nextcloud') ? 'Nextcloud no se puede revertir: ya actualizó su base de datos.' : '') })
-                : act({ label: jobRunning ? 'Actualizando…' : 'Actualizar', icon: 'download', kind: 'primary', spin: jobRunning, run: () => doUpdate(it.container, it.image, false), blocked: blocked || (jobRunning ? 'Hay una acción en curso.' : '') });
+                ? act({ label: 'Revertir', icon: 'restart', run: () => doUpdate(it, 'revert'), blocked: blocked || busy || (isNc ? 'Nextcloud no se puede revertir: ya actualizó su base de datos.' : '') })
+                : it.state === 'behind'
+                ? act({ label: jobRunning ? 'Alineando…' : 'Alinear', icon: 'refresh', kind: 'primary', spin: jobRunning, run: () => doUpdate(it, 'align'), blocked: blocked || busy })
+                : act({ label: jobRunning ? 'Actualizando…' : 'Actualizar', icon: 'download', kind: 'primary', spin: jobRunning, run: () => doUpdate(it, 'apply'), blocked: blocked || busy });
+              const nc = d.s.nextcloud;
+              const auxAct = it.waiting?.length ? act({ label: 'Arrancar auxiliares', icon: 'play', run: () => doUpdate(it, 'aux'), blocked: blocked || busy || (isNc && nc.maintenance ? 'Nextcloud sigue en modo de mantenimiento: resuélvelo antes.' : '') || (isNc && !nc.reachable ? 'Nextcloud todavía no responde.' : '') }) : null;
+              const note = it.error || (it.state === 'updated' ? (isNc ? 'Actualizada. Nextcloud no se puede revertir desde el panel; para volver atrás hace falta una copia de seguridad.' : 'Se conserva la imagen anterior para poder revertir durante 7 días, salvo que liberes espacio en Imágenes.')
+                : it.state === 'behind' ? (it.behind ? 'Usa una versión anterior de la imagen que ya está en el servidor.' : 'Alguno de sus contenedores usa una versión anterior de la imagen que ya está en el servidor.')
+                : isNc ? 'Hay una versión nueva de esta etiqueta. Antes de actualizar, haz una copia de seguridad.' : 'Hay una compilación nueva de esta etiqueta en el registro.');
               return (
                 <div className="lrow" key={it.container} style={{ flexWrap: 'wrap', alignItems: 'flex-start', paddingTop: 12, paddingBottom: 12 }}>
                   <span className="ico-box"><Icon name="boxes" /></span>
                   <div className="grow" style={{ minWidth: 200 }}>
                     <span className="strong">{it.container}</span><span className="sub mono">{it.image}</span>
-                    <span className="sub" style={{ marginTop: 3, color: it.error ? 'var(--err)' : 'var(--ink2)' }}>{it.error || (it.state === 'updated' ? (it.image.startsWith('nextcloud') ? 'Actualizada. Nextcloud no se puede revertir desde el panel; para volver atrás hace falta una copia de seguridad.' : 'Se conserva la imagen anterior para poder revertir durante 7 días, salvo que liberes espacio en Imágenes.') : it.image.startsWith('nextcloud') ? 'Hay una versión nueva de esta etiqueta. Antes de actualizar, haz una copia de seguridad.' : 'Hay una compilación nueva de esta etiqueta en el registro.')}</span>
+                    <span className="sub" style={{ marginTop: 3, color: it.error ? 'var(--err)' : 'var(--ink2)' }}>{note}</span>
+                    {it.siblings?.length ? (
+                      <ul className="sib-list" aria-label="Otros contenedores con esta imagen">
+                        {it.siblings.map((sb) => (
+                          <li key={sb.name}>
+                            <span className="mono small">{sb.name}</span>
+                            <span className="sub">{siblingText(sb)}</span>
+                            {sb.behind && sb.state !== 'waiting' && <span className="sub sib-st warn"><Icon name="clock" />Usa una versión anterior de la imagen.</span>}
+                            {sb.state === 'waiting' && <span className="sub sib-st warn"><Icon name="clock" />{sb.note || 'Detenido a la espera de que Nextcloud se recupere.'}</span>}
+                            {sb.state === 'failed' && <span className="sub sib-st err"><Icon name="x" />{sb.note || 'No se pudo recrear y sigue con la versión anterior.'}</span>}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    {it.sameImage?.length ? <span className="sub" style={{ marginTop: 3 }}>Con el mismo ID de imagen pero otra etiqueta: {joinNames(it.sameImage)}. No se tocan.</span> : null}
+                    {it.linked?.length ? <span className="sub" style={{ marginTop: 3 }}>{it.linked.length > 1 ? 'Usan su red y se reconectan' : 'Usa su red y se reconecta'} al final: {joinNames(it.linked)}.</span> : null}
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}><Badge s={badge} /><ActButton a={a} /></div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}><Badge s={badge} />{auxAct && <ActButton a={auxAct} />}<ActButton a={a} /></div>
                   {it.nextMajor && it.state !== 'updating' && (
                     <div className="major-box">
                       <span className="strong small">Versión mayor nueva: <span className="mono">{it.nextMajor}</span></span>

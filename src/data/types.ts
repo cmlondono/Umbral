@@ -108,14 +108,38 @@ export interface NetDevice {
 
 export interface Network { subnet: string; gateway: string; iface: string; lastScan: string | null; devices: NetDevice[] }
 
+/** Otro contenedor con la misma imagen que el principal de una actualización. */
+export interface Sibling {
+  name: string;
+  /** aux: comparte volumen con el principal o es de su proyecto con otro entrypoint; independent: otra instancia. */
+  role: 'aux' | 'independent';
+  project?: string;
+  otherProject?: boolean;
+  /** Usa una versión anterior de la imagen que ya tiene su etiqueta. */
+  behind?: boolean;
+  state?: 'waiting' | 'failed';
+  note?: string;
+}
+
 export interface Update {
   container: string;
   image: string;
-  state: 'available' | 'major' | 'updating' | 'updated' | 'reverting' | 'failed';
+  /** behind: alguno usa una versión anterior de la imagen que ya está en el servidor. */
+  state: 'available' | 'major' | 'behind' | 'updating' | 'updated' | 'reverting' | 'failed';
   checkedAt: string;
   previousImageId: string | null;
   error: string | null;
   nextMajor?: string;
+  behind?: boolean;
+  /** Los demás contenedores con la misma imagen: se actualizan y se revierten juntos. */
+  siblings?: Sibling[];
+  /** Mismo ID de imagen con otra etiqueta («nombre (etiqueta)»): solo informativo. */
+  sameImage?: string[];
+  /** Contenedores que usan la red de alguno del grupo: se reconectan al final. */
+  linked?: string[];
+  previousAlso?: Record<string, string>;
+  /** Auxiliares detenidos a la espera de que Nextcloud se recupere. */
+  waiting?: string[];
 }
 
 export interface Updates { lastCheck: string | null; checking: boolean; items: Update[] }
@@ -179,7 +203,7 @@ export interface HookURLs { local?: string; tailscale?: string }
 
 export interface Job {
   id: string;
-  kind: 'pull' | 'deploy' | 'update' | 'revert' | 'disk';
+  kind: 'pull' | 'deploy' | 'update' | 'revert' | 'disk' | 'align' | 'aux';
   target: string;
   state: 'running' | 'done' | 'error';
   progress: number;

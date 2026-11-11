@@ -21,6 +21,8 @@ import (
 type Docker struct {
 	hc     *http.Client
 	stream *http.Client
+	refsMu sync.Mutex
+	refs   map[string]string // ID del contenedor → imagen con la que se creó
 }
 
 func NewDocker(socket string) *Docker {
@@ -71,6 +73,12 @@ type apiErr struct {
 }
 
 func (e *apiErr) Error() string { return e.msg }
+
+// notModified: Docker responde 304 al detener un contenedor ya detenido.
+func notModified(err error) bool {
+	var e *apiErr
+	return errors.As(err, &e) && e.code == 304
+}
 
 func friendlyNetErr(err error) string {
 	s := err.Error()
@@ -144,6 +152,12 @@ func (d *Docker) Containers(ctx context.Context) ([]Container, error) {
 		if len(r.Names) > 0 {
 			c.Name = strings.TrimPrefix(r.Names[0], "/")
 		}
+		// Cuando su etiqueta ya apunta a otra imagen (por ejemplo, tras
+		// descargar una versión nueva para otro contenedor), Docker muestra el
+		// ID en lugar del nombre. La referencia original sigue en su configuración.
+		if strings.HasPrefix(r.Image, "sha256:") {
+			c.Image = d.createdWith(ctx, r.ID, r.Image)
+		}
 		switch r.State {
 		case "running", "restarting", "paused", "created", "dead":
 			c.State = r.State
@@ -176,6 +190,25 @@ func (d *Docker) Containers(ctx context.Context) ([]Container, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// createdWith devuelve la imagen con la que se creó un contenedor. No cambia
+// mientras exista, así que se guarda.
+func (d *Docker) createdWith(ctx context.Context, id, fallback string) string {
+	d.refsMu.Lock()
+	defer d.refsMu.Unlock()
+	if ref, ok := d.refs[id]; ok {
+		return ref
+	}
+	var raw struct{ Config struct{ Image string } }
+	if d.do(ctx, "GET", "/containers/"+url.PathEscape(id)+"/json", nil, &raw) != nil || raw.Config.Image == "" {
+		return fallback
+	}
+	if d.refs == nil || len(d.refs) > 500 {
+		d.refs = map[string]string{}
+	}
+	d.refs[id] = raw.Config.Image
+	return raw.Config.Image
 }
 
 // Stats pide una lectura de CPU y memoria de cada contenedor en ejecución.
@@ -532,11 +565,19 @@ func (d *Docker) Recreate(ctx context.Context, raw map[string]json.RawMessage, n
 	delete(cfg, "Hostname")
 	keepAnonymousVolumes(raw, host)
 	cfg["HostConfig"] = host
-	eps := map[string]any{}
-	for n, ep := range netw.Networks {
-		eps[n] = map[string]any{"Aliases": ep["Aliases"]}
+	if nm, _ := host["NetworkMode"].(string); strings.HasPrefix(nm, "container:") {
+		// Usa la red de otro contenedor: Docker rechaza puertos expuestos,
+		// MAC o dominio propios, que la configuración heredó de la imagen.
+		delete(cfg, "ExposedPorts")
+		delete(cfg, "MacAddress")
+		delete(cfg, "Domainname")
+	} else {
+		eps := map[string]any{}
+		for n, ep := range netw.Networks {
+			eps[n] = map[string]any{"Aliases": ep["Aliases"]}
+		}
+		cfg["NetworkingConfig"] = map[string]any{"EndpointsConfig": eps}
 	}
-	cfg["NetworkingConfig"] = map[string]any{"EndpointsConfig": eps}
 	var out struct {
 		ID string `json:"Id"`
 	}
@@ -582,6 +623,20 @@ func keepAnonymousVolumes(raw map[string]json.RawMessage, host map[string]any) {
 	if len(binds) > 0 {
 		host["Binds"] = binds
 	}
+}
+
+// ImageConfig devuelve el entrypoint y el command que trae una imagen.
+func (d *Docker) ImageConfig(ctx context.Context, ref string) (entrypoint, cmd []string, err error) {
+	var raw struct {
+		Config struct{ Entrypoint, Cmd []string }
+	}
+	err = d.do(ctx, "GET", "/images/"+url.PathEscape(ref)+"/json", nil, &raw)
+	return raw.Config.Entrypoint, raw.Config.Cmd, err
+}
+
+// SetRestartPolicy cambia la política de reinicio de un contenedor sin recrearlo.
+func (d *Docker) SetRestartPolicy(ctx context.Context, id string, policy any) error {
+	return d.do(ctx, "POST", "/containers/"+url.PathEscape(id)+"/update", map[string]any{"RestartPolicy": policy}, nil)
 }
 
 // ImageEnv devuelve el valor de una variable de entorno declarada en una imagen.

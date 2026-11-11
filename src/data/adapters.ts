@@ -44,8 +44,10 @@ export interface Adapter {
   backupDatabase(container: string): Promise<{ path: string; sizeKB: number; database: string }>;
   deploy(spec: DeploySpec): Promise<Job>;
   checkUpdates(): Promise<Snapshot>;
-  applyUpdate(name: string): Promise<Job>;
-  applyMajor(name: string): Promise<Job>;
+  applyUpdate(name: string, skip?: string[]): Promise<Job>;
+  applyMajor(name: string, skip?: string[]): Promise<Job>;
+  alignUpdate(name: string, skip?: string[]): Promise<Job>;
+  startAux(name: string): Promise<Job>;
   backupNextcloud(code: string): Promise<Job>;
   prepareDisk(p: { action: 'usar' | 'formatear'; disk: string; serial: string; size: number; code: string }): Promise<Job>;
   revertUpdate(name: string): Promise<Job>;
@@ -140,8 +142,10 @@ export const httpAdapter: Adapter = {
   backupDatabase: (container) => call('POST', `/api/containers/${encodeURIComponent(container)}/backup`, {}),
   deploy: (spec) => call('POST', '/api/deploy', spec),
   checkUpdates: () => call('POST', '/api/updates/check', {}),
-  applyUpdate: (name) => call('POST', `/api/updates/${encodeURIComponent(name)}/apply`, confirm),
-  applyMajor: (name) => call('POST', `/api/updates/${encodeURIComponent(name)}/major`, confirm),
+  applyUpdate: (name, skip = []) => call('POST', `/api/updates/${encodeURIComponent(name)}/apply`, { ...confirm, skip }),
+  applyMajor: (name, skip = []) => call('POST', `/api/updates/${encodeURIComponent(name)}/major`, { ...confirm, skip }),
+  alignUpdate: (name, skip = []) => call('POST', `/api/updates/${encodeURIComponent(name)}/align`, { ...confirm, skip }),
+  startAux: (name) => call('POST', `/api/updates/${encodeURIComponent(name)}/start-aux`, confirm),
   backupNextcloud: (code) => call('POST', '/api/backups/nextcloud', { code }),
   prepareDisk: (p) => call('POST', '/api/disks/prepare', { ...p, ...confirm }),
   revertUpdate: (name) => call('POST', `/api/updates/${encodeURIComponent(name)}/revert`, confirm),

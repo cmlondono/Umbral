@@ -47,6 +47,27 @@ El botón **Actualizar** del panel fuerza una lectura nueva de todo. En la panta
   - funciona igual con contenedores de Compose, sin leer su archivo;
   - la imagen anterior se conserva para poder revertir.
   - Si falla y luego se arregla a mano, el aviso desaparece solo en cuanto el contenedor funciona; el fallo queda en el historial.
+- **Contenedores con la misma imagen**: todos los que usan el mismo `repo:tag` forman un grupo y se actualizan juntos. Los fijados por digest (`repo@sha256:…`) no entran, y uno con el mismo ID de imagen pero otra etiqueta solo se menciona.
+  - El papel de cada uno se deduce, sin nombres:
+    - **principal**: el que usa el entrypoint de la imagen; si se pulsa en un auxiliar, el de su proyecto que lo use;
+    - **auxiliar**: comparte un volumen con el principal o es de su proyecto de Compose con otro entrypoint o command (cron, workers, respaldos);
+    - **independiente**: el resto, por ejemplo otra instancia en otro proyecto.
+  - Orden:
+    1. una sola descarga;
+    2. el procedimiento propio de la aplicación, si lo tiene, como el de Nextcloud;
+    3. se detienen los auxiliares;
+    4. se recrea el principal y se espera a que esté sano (su healthcheck, si lo tiene);
+    5. se recrean los auxiliares;
+    6. termina el mantenimiento;
+    7. se recrean los independientes.
+  - Si falla el principal, todo el grupo vuelve a la versión anterior. Si falla un auxiliar o un independiente, se reintenta una vez; si sigue fallando, solo ese vuelve a la anterior y el panel lo avisa.
+  - El diálogo muestra los hermanos marcados; el que se desmarca no se toca.
+  - Cada instancia de Nextcloud es una actualización aparte, con su propio mantenimiento y su propia copia.
+  - Si un hermano se queda con una versión anterior de la imagen (por ejemplo, tras `docker compose pull`), aparece como «Versión anterior» y **Alinear** lo recrea sin descargar nada.
+  - Los contenedores de Compose se recrean por la API, con sus etiquetas, para poder saltar de versión mayor y revertir a un ID concreto.
+  - Los contenedores anteriores (`<nombre>-anterior`) se borran solo cuando todo el grupo terminó bien; mientras tanto quedan detenidos y sin reinicio automático. La imagen anterior no se borra nunca sola.
+  - Los que usan la red de otro (`network_mode: container:…`) se reconectan al final.
+  - El historial anota cada contenedor con el ID de imagen anterior y el nuevo.
 - **Versiones mayores de Nextcloud**: si el contenedor usa una etiqueta de versión fija (`30`, `30-apache`, `30.0.2-fpm`…), el servidor comprueba con una petición HEAD si ya existe la siguiente (`31-apache`).
   - El panel ofrece el salto con el mismo procedimiento que el resto de actualizaciones.
   - Antes exige aplicar la actualización pendiente de la versión actual.
@@ -57,7 +78,7 @@ El botón **Actualizar** del panel fuerza una lectura nueva de todo. En la panta
   - recreación del contenedor y espera a que Nextcloud actualice su base de datos;
   - fin del mantenimiento;
   - bloquea los saltos de más de una versión mayor;
-  - si algo sale mal, se queda en mantenimiento para proteger los datos;
+  - si algo sale mal, se queda en mantenimiento para proteger los datos, con los auxiliares detenidos; cuando se resuelve, **Arrancar auxiliares** los recrea con la versión nueva;
   - no se revierte desde el panel, porque la base de datos ya cambió.
 
 ## Copias de seguridad

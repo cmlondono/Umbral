@@ -145,6 +145,9 @@ func (c *countWriter) Write(p []byte) (int, error) {
 
 // waitNextcloudUpgrade espera a que el contenedor nuevo termine de actualizar
 // Nextcloud (lo hace solo al arrancar) y comprueba que ya usa la versión nueva.
+// ncPollEvery: cada cuánto se pregunta a Nextcloud si terminó de actualizarse.
+var ncPollEvery = 5 * time.Second
+
 func (a *App) waitNextcloudUpgrade(ctx context.Context, ctr, want string, progress func(string)) error {
 	deadline := time.Now().Add(20 * time.Minute)
 	ok := 0
@@ -152,7 +155,7 @@ func (a *App) waitNextcloudUpgrade(ctx context.Context, ctr, want string, progre
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(5 * time.Second):
+		case <-time.After(ncPollEvery):
 		}
 		// Un reinicio suelto es normal: el arranque de Nextcloud puede fallar en
 		// un paso final (por ejemplo, si MariaDB corta una conexión) y en el

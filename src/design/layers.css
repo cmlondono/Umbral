@@ -32,3 +32,8 @@
 .toast-b{font-size:13px;color:var(--ink2);margin-top:2px}
 .toast .grow{flex:1;min-width:0}
 
+.md-checks{border:0;padding:0;margin:14px 0 0;display:grid;gap:10px;min-width:0}
+.md-checks legend{padding:0;margin-bottom:8px;color:var(--ink)}
+.md-check{display:flex;gap:10px;align-items:flex-start;cursor:pointer}
+.md-check input{margin-top:3px;accent-color:var(--accent);flex:none}
+.md-check .sub{display:block}
